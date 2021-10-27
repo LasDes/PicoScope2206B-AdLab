@@ -153,6 +153,16 @@ int main()
 		//downsampling mode, set to none to recieve raw data
 	ps2000aSetDataBuffer(*handle, PS2000A_CHANNEL_A, buffer, nSamples, (uint32_t)0, PS2000A_RATIO_MODE_NONE);
 
+	//Fill in parameters with these function calls, then work out a way to display the data you captured from teh sweep generator
+	ps2000aRunStreaming();
+
+	//ps2000aGetValuesAsync()??
+	ps2000aGetStreamingLatestValues();
+
+	ps2000aStop();
+
+
+
 	// start with ps2000aRunStreaming()
 			//Grab data either with ps2000aGetStreamingLatestValues() or alternate functions to access stored data
 				//manipulation to check for double peaks here
