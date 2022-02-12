@@ -1,7 +1,7 @@
 /*
 Project written to collect data for the muon lifetime experiment using a picoscope 2206BMSO
 Code is adapted from parts of example code provided on the company's github page:
-https://github.com/picotech/picosdk-c-examples/tree/master/ps2000
+https://github.com/picotech/picosdk-c-examples/blob/master/ps2000a/ps2000aCon/ps2000aCon.c
 */
 #include <limits> //getting infinity, max value of datatypes, etc.
 #include <string> //string manipulation for file naming
@@ -13,7 +13,7 @@ https://github.com/picotech/picosdk-c-examples/tree/master/ps2000
 #ifdef _WIN32
 #include "windows.h"
 #include <conio.h>
-#include "ps2000aApi.h"
+#include "ps2000aApi.h" //device specific header
 #else
 #include <sys/types.h>
 #include <string.h>
@@ -115,7 +115,7 @@ wasn't copied over to here)
 */
 #define		PREF4			__stdcall //for callback function
 #define		DUAL_SCOPE		2 // used in get_info function, number of channels in a DUAL_SCOPE is 2
-#define		QUAD_SCOPE		4 // used in get_info function, number of channels in a QUAD_SCOPE is 2
+#define		QUAD_SCOPE		4 // used in get_info function, number of channels in a QUAD_SCOPE is 4
 
 /*Visual Studio had an issue with the way he did this
 via enumeration, we'll just define TRUE and FALSE this
@@ -2169,7 +2169,7 @@ PICO_STATUS SetDefaults(UNIT* unit)
 * - status : PICO_STATUS indicating whether or not there's an issue with the
 *	device
 * - pParameter : pointer passed from ps2000aRunBlock so that this function
-*	can pass back arbitrary data back to the calling space
+*	can pass back arbitrary data to the calling space
 *		- not used in this case, NULL pointer passed
 * Returns
 * - none
@@ -2398,7 +2398,7 @@ uint32_t* BlockPeaktoPeak(UNIT* unit, int16_t buffer[], uint32_t sampleCount, ui
 
 * - Used by all block data routines
 * - acquires data (user sets trigger mode before calling),
-*   and saves all to a .csv file
+*   and saves all to a .csv file (if specified by numwavestosaved)
 
 * Parameters
 * - unit : pointer to the UNIT structure, where the handle is stored
