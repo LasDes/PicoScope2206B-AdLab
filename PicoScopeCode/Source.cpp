@@ -135,6 +135,7 @@ int32_t 		g_times[PS2000A_MAX_CHANNELS]; // unsure what this is used for (maybe 
 /*Some global variables (mine)*/
 BOOL			g_firstRun = TRUE; // keep track if this is the first time the scope collects data so we can avoid some redundant prints and such
 BOOL			g_QuitFlag = FALSE; // flag used to help end data collection 
+BOOL			g_cinflag = FALSE; // flag used to keep track of cin's error status after taking in user input, FALSE (no flag raised) if ok, TRUE if error indicated by cin
 int16_t			g_qinit = -1; // initialization variable for 'Q' key state for global quit 
 int32_t			g_trigthresh; // threshold value for our initial trigger in mV
 int32_t			g_peakthresh; // threshold for our peak finding alg in mV
@@ -1722,6 +1723,32 @@ std::string PICO_STATUStoString(PICO_STATUS status)
 	return outputstr;
 }
 
+/****************************************************************************
+* cinReset
+*
+* Used for clearing the input buffer after taking in user input using
+* std::cin
+* First calls cin.clear()
+* Then alls std::cin.ignore() to help with clearing the input buffer for future
+* inputs
+* "Pushes" the max macro before calling std::cin.ignore() so that
+* std::numeric_limits<std::streamsize>::max() gets read correctly, gets
+* read as the max macro which just returns the largest of two arguments passed
+*
+* Parameters
+* - none
+*
+* Returns
+* - none
+****************************************************************************/
+void cinReset()
+{
+	std::cin.clear();
+#pragma push_macro("max")
+#undef max
+	std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+#pragma pop_macro("max")
+}
 
 /****************************************************************************
 * _kbhitinit
@@ -1905,7 +1932,7 @@ int8_t* timeUnitsToString(PS2000A_TIME_UNITS timeUnits)
 		timeUnitsStr = (int8_t*)"s";
 		break;
 
-	default:
+	default: // invalid input
 
 		timeUnitsStr = (int8_t*)"invalid time unit";
 	}
@@ -2655,9 +2682,10 @@ PICO_STATUS CollectBlockTriggered(UNIT* unit, FILE* peakfp)
 	if (g_firstRun == TRUE) // only need to set the device's settings, triggers once
 	{
 		g_trigthresh = inputRanges[unit->channelSettings[PS2000A_CHANNEL_A].range] + 1; //set the initial value to something unacceptable so we enter the while loop
-		std::cin.clear(); // good practice to clear the input buffer
-		while (!(g_trigthresh > -inputRanges[unit->channelSettings[PS2000A_CHANNEL_A].range]
-			&& g_trigthresh < inputRanges[unit->channelSettings[PS2000A_CHANNEL_A].range]))
+		std::cin.clear(); // flush the input buffer
+		while (!(g_trigthresh > -inputRanges[unit->channelSettings[PS2000A_CHANNEL_A].range] // make sure input falls in an acceptable range
+			&& g_trigthresh < inputRanges[unit->channelSettings[PS2000A_CHANNEL_A].range]) // ^
+			|| g_cinflag) // and there were no errors while taking in input
 		{
 			printf("\n\nPlease enter the scope's trigger threshold (%d mV to %d mV):\nA value of -400mV is recommended.\n",
 				-inputRanges[unit->channelSettings[PS2000A_CHANNEL_A].range],
@@ -2665,8 +2693,8 @@ PICO_STATUS CollectBlockTriggered(UNIT* unit, FILE* peakfp)
 			printf("Trigger Threshold (mV): ");
 
 			std::cin >> g_trigthresh;
-			std::cin.clear(); // clear input buffer again for subsequent inputs
-			std::cin.ignore(INT_MAX, '\n'); // ^
+			g_cinflag = (std::cin.bad() || std::cin.fail()) ? TRUE : FALSE; // check if cin's error flags were set
+			cinReset(); // flush the input buffer for future inputs
 		}
 
 		//printf("Selected Trigger Threshold: %d mV \n", g_trigthresh);
@@ -2738,7 +2766,7 @@ PICO_STATUS CollectBlockTriggered(UNIT* unit, FILE* peakfp)
 /****************************************************************************
 * get_info
 *
-* Initialise unit' structure with Variant specific defaults
+* Initialise unit' structure with variant specific defaults
 
 * Parameters
 * - unit : pointer to the UNIT structure, where the handle is stored
@@ -2882,7 +2910,8 @@ PICO_STATUS OpenDevice(UNIT* unit)
 	//param select here
 	rangeselect = unit->firstRange - 1; // make initial value unacceptable so we enter the while loop
 	std::cin.clear(); // flush the input buffer
-	while (!(rangeselect > unit->firstRange && rangeselect < unit->lastRange))
+	while (!(rangeselect > unit->firstRange && rangeselect < unit->lastRange) // make sure input falls in an acceptable range
+		|| g_cinflag) // and there were no errors while taking in input
 	{
 		printf("\n\nPlease select the scope's operational voltage range:\n");
 		printf("The recommended value is 2000mV.\n");
@@ -2899,8 +2928,8 @@ PICO_STATUS OpenDevice(UNIT* unit)
 		// supported ranges by all picoscope devices 
 		rangeselect += unit->firstRange;
 		scoperange = (PS2000A_RANGE)inputRanges[rangeselect];
-		std::cin.clear();
-		std::cin.ignore(INT_MAX, '\n');
+		g_cinflag = (std::cin.bad() || std::cin.fail()) ? TRUE : FALSE; // check if cin's error flags were set
+		cinReset(); // flush the input buffer for future inputs
 	}
 
 	printf("Selected Range: %d mV \n", scoperange);
@@ -2928,21 +2957,21 @@ PICO_STATUS OpenDevice(UNIT* unit)
 	{
 		/* make initial value unacceptable so we enter the while loop (value is 1 below the scope's supported range) */
 		g_peakthresh = -inputRanges[unit->channelSettings[PS2000A_CHANNEL_A].range] - 1;
-
 		std::cin.clear(); // flush the input buffer
-		while (!(g_peakthresh >= -inputRanges[unit->channelSettings[PS2000A_CHANNEL_A].range]
-			&& g_peakthresh <= 0))
+		while (!(g_peakthresh >= -inputRanges[unit->channelSettings[PS2000A_CHANNEL_A].range] // make sure input falls in an acceptable range
+			&& g_peakthresh <= 0) // ^
+			|| g_cinflag) // and there were no errors while taking in input
 		{
 			printf("\n\nPlease enter the threshold for the peak detection algorithm(-%d mV to 0 mV):\nA value of -200mV is recommended.\n\n",
 				inputRanges[unit->channelSettings[PS2000A_CHANNEL_A].range]);
 			printf("Peak Detection Threshold (mV): ");
 
-			std::cin >> g_peakthresh;
-			std::cin.clear();
-			std::cin.ignore(INT_MAX, '\n');
+			std::cin >> g_peakthresh; // take in the input
+			g_cinflag = (std::cin.bad() || std::cin.fail()) ? TRUE : FALSE; // check if cin's error flags were set
+			cinReset(); // flush the input buffer for future inputs
 		}
 
-		//printf("Selected Peak Detection Threshold: %d mV \n", g_peakthresh);
+		printf("Selected Peak Detection Threshold: %d mV \n", g_peakthresh);
 	}
 
 	// seems like we don't use these structs but they need to be passed as args still
@@ -3049,16 +3078,18 @@ int main()
 		g_numwavestosaved = -2;
 
 		// select number of waveforms to save to .csv files
-		std::cin.clear(); // flushing the input buffer
-		while (!(g_numwavestosaved >= -1 && g_numwavestosaved <= (std::numeric_limits<long>::max)()))
+		std::cin.clear(); // flush the input buffer
+		while (!(g_numwavestosaved >= -1 && g_numwavestosaved <= (std::numeric_limits<long>::max)()) // make sure input falls in an acceptable range
+			|| g_cinflag) // and there were no errors while taking in input
 		{
 			printf("Please enter the number of multi-peak waveforms you'd like to save. (0-%d)\n", (std::numeric_limits<long>::max)());
 			printf("Enter -1 if you wish to save every multi-peak waveform the scope records.\n");
 			printf("Number of Waveforms: ");
 
 			std::cin >> g_numwavestosaved; // take in the user input
-			std::cin.clear(); // flush the input buffer for future input
-			std::cin.ignore(INT_MAX, '\n'); // ^
+			g_cinflag = (std::cin.bad() || std::cin.fail()) ? TRUE : FALSE; // check if cin's error flags were set
+			cinReset(); // flush the input buffer for future inputs
+
 		}
 
 		while (!_kbhitpoll(g_qinit))
