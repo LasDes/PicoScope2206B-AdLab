@@ -87,11 +87,7 @@ typedef struct tBufferInfo
 {
 	UNIT* unit;
 	MODE mode;
-	int16_t** driverBuffers;
-	int16_t** appBuffers;
-	//added entries for size of the buffers->not really needed for block mode
-	uint32_t driverBufferNumEntries;
-	uint32_t appBuffersNumEntries;
+	int16_t* driverBuffer; // originally int16_t** driverBuffers, only need one buffer since we're only using one channel
 } BUFFER_INFO;
 
 uint16_t inputRanges[PS2000A_MAX_RANGES] = {
@@ -2467,11 +2463,8 @@ PICO_STATUS BlockDataHandler(UNIT* unit, FILE* peakfp, int32_t offset, MODE mode
 	uint32_t* indices = NULL; // array to hold numpeaks and the indices of such peaks
 	BOOL lasttosave = FALSE; // indicates if the waveform just saved was the last one to be saved
 	FILE* wavefp = NULL;
-	// Again going to switch things up so that we only
-	// have one channel's worth of memory in these buffers
-	// as we're only using channel A
-	int16_t* buffers[1] = { NULL }; // might want to make this 1-D since we're only using 1 channel
-	int16_t qinit = -1;
+	int16_t* buffer = NULL; // buffer where the device will dump its block of data to
+	int16_t qinit = -1; // stores 'Q' key toggle state for quitting
 	PS2000A_RATIO_MODE ratioMode = PS2000A_RATIO_MODE_NONE; // Don't want any downsampling
 
 	if ((status = ps2000aMemorySegments(unit->handle, (uint32_t)1, &maxSamples)) != PICO_OK)
@@ -2499,8 +2492,8 @@ PICO_STATUS BlockDataHandler(UNIT* unit, FILE* peakfp, int32_t offset, MODE mode
 
 	if (mode == ANALOGUE)
 	{
-		buffers[0] = (int16_t*)malloc(sampleCount * sizeof(int16_t));
-		if ((status = ps2000aSetDataBuffer(unit->handle, PS2000A_CHANNEL_A, buffers[PS2000A_CHANNEL_A], sampleCount, segmentIndex, ratioMode)) != PICO_OK)
+		buffer = (int16_t*)malloc(sampleCount * sizeof(int16_t));
+		if ((status = ps2000aSetDataBuffer(unit->handle, PS2000A_CHANNEL_A, buffer, sampleCount, segmentIndex, ratioMode)) != PICO_OK)
 		{
 			printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aSetDataBuffer").c_str());
 			return status;
@@ -2536,7 +2529,7 @@ PICO_STATUS BlockDataHandler(UNIT* unit, FILE* peakfp, int32_t offset, MODE mode
 		status = ps2000aGetValues(unit->handle, 0, (uint32_t*)&sampleCount, downsampleratio, ratioMode, 0, NULL);
 		printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aGetValues").c_str());
 
-		indices = BlockPeaktoPeak(unit, buffers[PS2000A_CHANNEL_A], sampleCount, timeIntervalNanoseconds, downsampleratio);
+		indices = BlockPeaktoPeak(unit, buffer, sampleCount, timeIntervalNanoseconds, downsampleratio);
 		numpeaks = indices[0]; // numpeaks stored in the first array entry
 
 		// might want to make this == 2 since 3-peak events seem to throw a wrench in the data analysis
@@ -2571,8 +2564,8 @@ PICO_STATUS BlockDataHandler(UNIT* unit, FILE* peakfp, int32_t offset, MODE mode
 							{
 								fprintf(wavefp,
 									"%d, %d",
-									buffers[PS2000A_CHANNEL_A][i],
-									adc_to_mv(buffers[PS2000A_CHANNEL_A][i], unit->channelSettings[PS2000A_CHANNEL_A].range, unit));
+									buffer[i],
+									adc_to_mv(buffer[i], unit->channelSettings[PS2000A_CHANNEL_A].range, unit));
 							}
 							fprintf(wavefp, "\n");
 						}
@@ -2601,8 +2594,8 @@ PICO_STATUS BlockDataHandler(UNIT* unit, FILE* peakfp, int32_t offset, MODE mode
 					for (uint16_t i = 1; i <= numpeaks; i++)
 					{
 						fprintf(peakfp, "%d,%d,",
-							buffers[PS2000A_CHANNEL_A][indices[i]],
-							adc_to_mv(buffers[PS2000A_CHANNEL_A][indices[i]], unit->channelSettings[PS2000A_CHANNEL_A].range, unit));
+							buffer[indices[i]],
+							adc_to_mv(buffer[indices[i]], unit->channelSettings[PS2000A_CHANNEL_A].range, unit));
 					}
 					fprintf(peakfp, "T,"); // some arbitrary deliminating character between depths and time differences
 					// print time differences (in ns) between the first peak and other peaks
@@ -2643,9 +2636,9 @@ PICO_STATUS BlockDataHandler(UNIT* unit, FILE* peakfp, int32_t offset, MODE mode
 	// Free up the buffer if we allocated it
 	if (mode == ANALOGUE)
 	{
-		if (unit->channelSettings[PS2000A_CHANNEL_A].enabled && buffers[PS2000A_CHANNEL_A] != NULL)
+		if (unit->channelSettings[PS2000A_CHANNEL_A].enabled && buffer != NULL)
 		{
-			free(buffers[PS2000A_CHANNEL_A]);
+			free(buffer);
 		}
 	}
 
@@ -2819,7 +2812,7 @@ PICO_STATUS get_info(UNIT* unit)
 				/*
 				* have to do a little casting here because visual studio
 				* doesn't seem to want to compile it the the way
-				* the author wrote this doesn't work for some reason
+				* the original author wrote it some reason
 				*/
 
 				channelNum = line[1];
