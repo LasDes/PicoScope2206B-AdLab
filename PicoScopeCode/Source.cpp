@@ -1,6 +1,6 @@
 /*
-Project written to collect data for the muon lifetime experiment using a picoscope 2206BMSO
-Code is adapted from parts of example code provided on the company's github page:
+Project written to collect data for a muon lifetime experiment using a picoscope 2206BMSO
+Code is adapted from parts of example code provided on the PicoScope github page:
 https://github.com/picotech/picosdk-c-examples/blob/master/ps2000a/ps2000aCon/ps2000aCon.c
 */
 #include <limits> // infinity, max value of datatypes, etc.
@@ -83,6 +83,7 @@ typedef struct
 	double					awgDACFrequency;
 }UNIT;
 
+// Not super necessary, but helps with clarity when the buffer is allocated
 typedef struct tBufferInfo
 {
 	UNIT* unit;
@@ -2463,9 +2464,15 @@ PICO_STATUS BlockDataHandler(UNIT* unit, FILE* peakfp, int32_t offset, MODE mode
 	uint32_t* indices = NULL; // array to hold numpeaks and the indices of such peaks
 	BOOL lasttosave = FALSE; // indicates if the waveform just saved was the last one to be saved
 	FILE* wavefp = NULL;
-	int16_t* buffer = NULL; // buffer where the device will dump its block of data to
 	int16_t qinit = -1; // stores 'Q' key toggle state for quitting
 	PS2000A_RATIO_MODE ratioMode = PS2000A_RATIO_MODE_NONE; // Don't want any downsampling
+	int16_t* buffer = NULL; // buffer where the device will dump its block of data to
+	tBufferInfo BufferInfo = {
+		unit,
+		mode,
+		buffer
+	};
+
 
 	if ((status = ps2000aMemorySegments(unit->handle, (uint32_t)1, &maxSamples)) != PICO_OK)
 	{
@@ -2492,8 +2499,8 @@ PICO_STATUS BlockDataHandler(UNIT* unit, FILE* peakfp, int32_t offset, MODE mode
 
 	if (mode == ANALOGUE)
 	{
-		buffer = (int16_t*)malloc(sampleCount * sizeof(int16_t));
-		if ((status = ps2000aSetDataBuffer(unit->handle, PS2000A_CHANNEL_A, buffer, sampleCount, segmentIndex, ratioMode)) != PICO_OK)
+		BufferInfo.driverBuffer = (int16_t*)malloc(sampleCount * sizeof(int16_t));
+		if ((status = ps2000aSetDataBuffer(unit->handle, PS2000A_CHANNEL_A, BufferInfo.driverBuffer, sampleCount, segmentIndex, ratioMode)) != PICO_OK)
 		{
 			printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aSetDataBuffer").c_str());
 			return status;
@@ -2529,7 +2536,7 @@ PICO_STATUS BlockDataHandler(UNIT* unit, FILE* peakfp, int32_t offset, MODE mode
 		status = ps2000aGetValues(unit->handle, 0, (uint32_t*)&sampleCount, downsampleratio, ratioMode, 0, NULL);
 		printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aGetValues").c_str());
 
-		indices = BlockPeaktoPeak(unit, buffer, sampleCount, timeIntervalNanoseconds, downsampleratio);
+		indices = BlockPeaktoPeak(unit, BufferInfo.driverBuffer, sampleCount, timeIntervalNanoseconds, downsampleratio);
 		numpeaks = indices[0]; // numpeaks stored in the first array entry
 
 		// might want to make this == 2 since 3-peak events seem to throw a wrench in the data analysis
@@ -2564,8 +2571,8 @@ PICO_STATUS BlockDataHandler(UNIT* unit, FILE* peakfp, int32_t offset, MODE mode
 							{
 								fprintf(wavefp,
 									"%d, %d",
-									buffer[i],
-									adc_to_mv(buffer[i], unit->channelSettings[PS2000A_CHANNEL_A].range, unit));
+									BufferInfo.driverBuffer[i],
+									adc_to_mv(BufferInfo.driverBuffer[i], unit->channelSettings[PS2000A_CHANNEL_A].range, unit));
 							}
 							fprintf(wavefp, "\n");
 						}
@@ -2594,8 +2601,8 @@ PICO_STATUS BlockDataHandler(UNIT* unit, FILE* peakfp, int32_t offset, MODE mode
 					for (uint16_t i = 1; i <= numpeaks; i++)
 					{
 						fprintf(peakfp, "%d,%d,",
-							buffer[indices[i]],
-							adc_to_mv(buffer[indices[i]], unit->channelSettings[PS2000A_CHANNEL_A].range, unit));
+							BufferInfo.driverBuffer[indices[i]],
+							adc_to_mv(BufferInfo.driverBuffer[indices[i]], unit->channelSettings[PS2000A_CHANNEL_A].range, unit));
 					}
 					fprintf(peakfp, "T,"); // some arbitrary deliminating character between depths and time differences
 					// print time differences (in ns) between the first peak and other peaks
@@ -2636,9 +2643,9 @@ PICO_STATUS BlockDataHandler(UNIT* unit, FILE* peakfp, int32_t offset, MODE mode
 	// Free up the buffer if we allocated it
 	if (mode == ANALOGUE)
 	{
-		if (unit->channelSettings[PS2000A_CHANNEL_A].enabled && buffer != NULL)
+		if (unit->channelSettings[PS2000A_CHANNEL_A].enabled && BufferInfo.driverBuffer != NULL)
 		{
-			free(buffer);
+			free(BufferInfo.driverBuffer);
 		}
 	}
 
@@ -2690,20 +2697,22 @@ PICO_STATUS CollectBlockTriggered(UNIT* unit, FILE* peakfp)
 			cinReset(); // flush the input buffer for future inputs
 		}
 
-		//printf("Selected Trigger Threshold: %d mV \n", g_trigthresh);
+		printf("Selected Trigger Threshold: %d mV \n", g_trigthresh);
 
 		// convert desired trigger threshold from mV to ADC count
 		int16_t	triggerVoltage = mv_to_adc(g_trigthresh, unit->channelSettings[PS2000A_CHANNEL_A].range, unit);
 
 		// some of the author's/ SDK's defined structs used to set up the trigger
-		PS2000A_TRIGGER_CHANNEL_PROPERTIES sourceDetails = { triggerVoltage,
+		PS2000A_TRIGGER_CHANNEL_PROPERTIES sourceDetails = {
+			triggerVoltage,
 			256 * 10,
 			triggerVoltage,
 			256 * 10,
 			PS2000A_CHANNEL_A,
 			PS2000A_LEVEL };
 
-		PS2000A_TRIGGER_CONDITIONS conditions = { PS2000A_CONDITION_TRUE,				// Channel A
+		PS2000A_TRIGGER_CONDITIONS conditions = {
+			PS2000A_CONDITION_TRUE,				// Channel A
 			PS2000A_CONDITION_DONT_CARE,		// Channel B 
 			PS2000A_CONDITION_DONT_CARE,		// Channel C
 			PS2000A_CONDITION_DONT_CARE,		// Channel D
@@ -2713,7 +2722,8 @@ PICO_STATUS CollectBlockTriggered(UNIT* unit, FILE* peakfp)
 			PS2000A_CONDITION_DONT_CARE };		// digital
 
 		// do we want PS2000A_FALLING or PS2000A_FALLING_LOWER?-> PS2000A_FALLING seems to be working
-		TRIGGER_DIRECTIONS directions = { PS2000A_FALLING,			// Channel A
+		TRIGGER_DIRECTIONS directions = {
+			PS2000A_FALLING,		// Channel A
 			PS2000A_NONE,			// Channel B
 			PS2000A_NONE,			// Channel C
 			PS2000A_NONE,			// Channel D
@@ -2925,9 +2935,9 @@ PICO_STATUS OpenDevice(UNIT* unit)
 		cinReset(); // flush the input buffer for future inputs
 	}
 
-	printf("Selected Range: %d mV \n", scoperange);
+	printf("Selected Range: %d mV\n", scoperange);
 
-	//printf("Selected Trigger Threshold: %d mV \n", g_trigthresh);
+	printf("Selected Trigger Threshold: %d mV \n", g_trigthresh);
 
 	for (i = 0; i < unit->channelCount; i++)
 	{
@@ -3084,6 +3094,8 @@ int main()
 			cinReset(); // flush the input buffer for future inputs
 
 		}
+
+		printf("Selected number of multi-peak waveforms to save: %d\n", g_numwavestosaved);
 
 		while (!_kbhitpoll(g_qinit))
 		{
