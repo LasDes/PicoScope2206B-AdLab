@@ -7,9 +7,9 @@ https://github.com/picotech/picosdk-c-examples/blob/master/ps2000a/ps2000aCon/ps
 #include <string> // string manipulation for file naming
 #include <stdio.h> // input/output stuff
 #include <iostream> // input/output stuff 
-#include "ps2000aApi.h" // device-specific API
+#include "ps2000aApi.h" // device-specific header
 
-/* (Author's) Headers for Windows */
+// (Author's) Headers for Windows
 #ifdef _WIN32
 #include "windows.h"
 #include <conio.h>
@@ -31,7 +31,7 @@ https://github.com/picotech/picosdk-c-examples/blob/master/ps2000a/ps2000aCon/ps
 
 // The author defines a number of C-style structs at the beginning of his file
 // they seem like useful ways to manage data about the device or the data it's taking in
-// so we'll just paste them here and use them as is
+// so we'll just paste them here and modify them as we go
 
 typedef enum
 {
@@ -110,7 +110,6 @@ Some definitions by the author
 (Lots more in his file, whatever wasn't used
 wasn't copied over to here)
 */
-#define		PREF4			__stdcall // for callback function
 #define		DUAL_SCOPE		2 // used in get_info function, number of channels in a DUAL_SCOPE is 2
 #define		QUAD_SCOPE		4 // used in get_info function, number of channels in a QUAD_SCOPE is 4
 
@@ -121,15 +120,14 @@ via enumeration, we'll just define TRUE and FALSE this way
 #define		FALSE			0
 #define		TRUE			1
 
-/*Some global variables (author's)*/
-uint64_t		g_cycles = 0; // how many times the device is opened? Will always be 1 for this application
+// Some global variables (author's)
 uint32_t		g_timebase = 0; // originally set to 8 by author, we'll just go with 0 (fastest sampling rate)
 int16_t			g_oversample = 1; // not used by the two system calls that take in this variable
 BOOL			g_scaleVoltages = TRUE; // indicating for print statements whether to print values in terms of ADC counts (FALSE) or in mV (TRUE)
 BOOL     		g_ready = FALSE; // global ready flag set by the callback
 int32_t 		g_times[PS2000A_MAX_CHANNELS]; // unsure what this is used for (maybe a place to store a time offset, seems to be 0 with how we're using it)
 
-/*Some global variables (mine)*/
+// Some global variables (mine)
 BOOL			g_firstRun = TRUE; // keep track if this is the first time the scope collects data so we can avoid some redundant prints and such
 BOOL			g_QuitFlag = FALSE; // flag used to help end data collection 
 BOOL			g_cinflag = FALSE; // flag used to keep track of cin's error status after taking in user input, FALSE (no flag raised) if ok, TRUE if error indicated by cin
@@ -138,17 +136,20 @@ int32_t			g_trigthresh; // threshold value for our initial trigger in mV
 int32_t			g_peakthresh; // threshold for our peak finding alg in mV
 int64_t			g_numwavestosaved = 0; // number of waveforms to save in a given session, might want to rename
 uint64_t		g_nummultipeakevents = 0; // how many multi-peak events we've recorded so far (just peak info)
+FILE* peakfp = NULL; // file to hold peak info, making this global so it doesn't have to be passed to every function
+FILE* errorfp = NULL; // file to hold error log, making this global so it doesn't have to be passed to every function
 
 // Prefixes for file names for raw waveform data and peak to peak info
 std::string wavefilename = "RAW_WAVEFORM_";
 std::string peakfilename = "PEAK_INFO_";
+std::string errorfilename = "ERROR_LOG_";
 
 /****************************************************************************
 * PICO_STATUStoString
 *
 * Converts PICO_STATUS codes to strings containing their defined names
 * (There might have been a better way to do this than to manually copy
-* all of them, but oh well it's done and it works)
+* all of them into the switch statement, but oh well it's done and it works)
 *
 * Parameters
 * - status : the PICO_STATUS to be converted to a string
@@ -1726,10 +1727,10 @@ std::string PICO_STATUStoString(PICO_STATUS status)
 * Used for clearing the input buffer after taking in user input using
 * std::cin
 * First calls cin.clear()
-* Then alls std::cin.ignore() to help with clearing the input buffer for future
+* Then calls std::cin.ignore() to help with clearing the input buffer for future
 * inputs
 * "Pushes" the max macro before calling std::cin.ignore() so that
-* std::numeric_limits<std::streamsize>::max() gets read correctly, gets
+* std::numeric_limits<std::streamsize>::max() gets read correctly, otherwise gets
 * read as the max macro which just returns the largest of two arguments passed
 *
 * Parameters
@@ -1754,7 +1755,7 @@ void cinReset()
 * GetKeyState returns a short int, which is 2 bytes
 *	- Looking at the windows documentation...
 *		- If the high-order bit is 1, the key is down; otherwise, it is up.
-*		- If the low - order bit is 1, the key is toggled
+*		- If the low-order bit is 1, the key is toggled
 *			-(toggled/ untoggled is what we care about)
 *		- 'Q' key for quit
 *
@@ -1766,7 +1767,7 @@ void cinReset()
 ****************************************************************************/
 int16_t _kbhitinit()
 {
-	return (GetKeyState('Q') && 0x0001);
+	return (GetKeyState('Q') & 0x0001);
 }
 
 /****************************************************************************
@@ -1781,16 +1782,16 @@ int16_t _kbhitinit()
 * - init : the initial value of the key's toggle state
 *
 * Returns
-* - bool : indicates whether the key has been toggled (hasn't been toggled
-* returns false, otherwise returns true)
+* - BOOL : indicates whether the key has been toggled (hasn't been toggled
+* returns FALSE, otherwise returns TRUE)
 ****************************************************************************/
-bool _kbhitpoll(int16_t init)
+BOOL _kbhitpoll(int16_t init)
 {
-	if ((GetKeyState('Q') && 0x0001) == init)
+	if ((GetKeyState('Q') & 0x0001) == init)
 	{
-		return false;
+		return FALSE;
 	}
-	return true;
+	return TRUE;
 }
 
 /****************************************************************************
@@ -1843,6 +1844,43 @@ int16_t mv_to_adc(int16_t mv, int16_t ch, UNIT* unit)
 }
 
 /****************************************************************************
+* timeInfoFunc
+*
+* Returns a string containing info about the current data and time using
+* some of the Windows API functions
+* - useful for print statements
+*
+* Parameters
+* - none
+*
+* Returns
+* - std::string : contains labels and time information for the current year,
+* month, day, hour, minute, and second
+****************************************************************************/
+std::string timeInfotoString()
+{
+	std::string accum;
+
+	SYSTEMTIME SystemTime; // Windows variable for storing date/time info
+	GetLocalTime(&SystemTime); //grab the current date/time info
+
+	accum += "Year_"; // year label
+	accum += std::to_string(SystemTime.wYear); // Windows API call to grab year value
+	accum += "_Month_"; // month label
+	accum += std::to_string(SystemTime.wMonth); // Windows API call to grab month value
+	accum += "_Day_"; // day label
+	accum += std::to_string(SystemTime.wDay); // Windows API call to grab day value
+	accum += "_Hour_"; // hour label
+	accum += std::to_string(SystemTime.wHour); // Windows API call to grab hour value
+	accum += "_Min_"; // minute label
+	accum += std::to_string(SystemTime.wMinute); // Windows API call to grab minute value
+	accum += "_Sec_"; // second label
+	accum += std::to_string(SystemTime.wSecond); // Windows API call to grab second value
+
+	return accum;
+}
+
+/****************************************************************************
 * picoerrortoString
 *
 * Takes in a pico status
@@ -1861,15 +1899,16 @@ int16_t mv_to_adc(int16_t mv, int16_t ch, UNIT* unit)
 *	PICO_STATUS status
 *
 * Returns
-* - std::string : contains a print of the error, the function that called it,
-* and the scope of the function. If status is PICO_OK, an empty string is
-* returned
+* - std::string : contains the line in the source file where the error occurred,
+* the calling scope of the function that caused the error, the function in that
+* scope that returned an error, a print of the error, and the error code
+*	- If status is PICO_OK, an empty string is returned
 ****************************************************************************/
 std::string picoerrortoString(PICO_STATUS status, int linenumber, std::string callingscope, std::string calledfunction)
 {
-	// allocating space for 200 chars is a bit arbitrary, but the callingscope functions can be arbitrarily(ish) 
+	// allocating space for 256 chars is a bit arbitrary, but the callingscope functions can be arbitrarily(ish) 
 	// long so we'll leave a reasonable amount of space to play with
-	char temp[200];
+	char temp[256];
 
 	// write the desired print statement to a string
 	sprintf_s(temp, (status) ? "[%d] %s::%s ------ %s (0x%08lx)\n" : "", linenumber, callingscope.c_str(), calledfunction.c_str(), PICO_STATUStoString(status).c_str(), status);
@@ -1880,18 +1919,50 @@ std::string picoerrortoString(PICO_STATUS status, int linenumber, std::string ca
 }
 
 /****************************************************************************
+* picoerrorLog
+*
+* Logs errors returned by pico library functions to a specified file
+*	- logs both the time the error occurs as well as the normal error info,
+*	  generated by picoerrortoString()
+*
+* Parameters
+* - errorlogfp : file pointer to the file where we're logging errors
+* - status : the PICO_STATUS returned by whatever pico library function
+*	(calledfunction) we called
+* - linenumber : line number in source file at which the pico lbrary function
+*	that returned the error was called
+* - callingscope : the function in which the pico library function
+*	(calledfunction) was called
+* - calledfunction : the pico library function we called that returned the
+*	PICO_STATUS status
+*
+* Returns
+* - BOOL : to indicate whether or not the error was logged
+		- TRUE indicates an error was logged
+		- FALSE indicates nothing was logged
+****************************************************************************/
+BOOL picoerrorLog(FILE* errorlogfp, PICO_STATUS status, int linenumber, std::string callingscope, std::string calledfunction)
+{
+	if (status != PICO_OK && errorlogfp != NULL)
+	{
+		fprintf(errorlogfp, "%s\n%s\n\n", timeInfotoString().c_str(), picoerrortoString(status, linenumber, callingscope, calledfunction).c_str());
+		return TRUE;
+	}
+	return FALSE;
+}
+
+/****************************************************************************
 * timeUnitsToString
 *
 * Converts PS2000A_TIME_UNITS enumeration to string
-*
-*	- When using this with printf, a %s in the format string seems to work
+*	- When using this with printf, a %s in the format string works
 *
 * Parameters
 * - timeUnits : enumerated pico time unit data type
 *
 * Returns
-* - char* : pointer to a char (with the second letter following) representing
-* the time unit as its metric prefix
+* - int8_t* : pointer to a char stored as an int8_t (with the second letter
+* following) representing the time unit as its metric prefix
 ****************************************************************************/
 int8_t* timeUnitsToString(PS2000A_TIME_UNITS timeUnits)
 {
@@ -1916,7 +1987,7 @@ int8_t* timeUnitsToString(PS2000A_TIME_UNITS timeUnits)
 
 	case PS2000A_US: // microseconds
 
-		timeUnitsStr = (int8_t*)"us"; //not sure how to get windows to print out "mu" character
+		timeUnitsStr = (int8_t*)"us"; //not sure how to get windows to print out "mu" character, very frustratiung
 		break;
 
 	case PS2000A_MS: // milliseconds
@@ -1935,7 +2006,6 @@ int8_t* timeUnitsToString(PS2000A_TIME_UNITS timeUnits)
 	}
 
 	return timeUnitsStr;
-
 }
 
 /****************************************************************************
@@ -1994,46 +2064,7 @@ uint64_t timeUnitsToValue(PS2000A_TIME_UNITS timeUnits)
 	}
 
 	return timeUnitsVal;
-
 }
-
-/****************************************************************************
-* timeInfoFunc
-*
-* Returns a string containing info about the current data and time using
-* some of the Windows API functions
-* - useful for print statements
-*
-* Parameters
-* - none
-*
-* Returns
-* - std::string : contains labels and time information for the current year,
-* month, day, hour, minute, and second
-****************************************************************************/
-std::string timeInfoFunc()
-{
-	std::string accum;
-
-	SYSTEMTIME SystemTime; // Windows variable for storing date/time info
-	GetLocalTime(&SystemTime); //grab the current date/time info
-
-	accum += "Year_"; // year label
-	accum += std::to_string(SystemTime.wYear); // Windows API call to grab year value
-	accum += "_Month_"; // month label
-	accum += std::to_string(SystemTime.wMonth); // Windows API call to grab month value
-	accum += "_Day_"; // day label
-	accum += std::to_string(SystemTime.wDay); // Windows API call to grab day value
-	accum += "_Hour_"; // hour label
-	accum += std::to_string(SystemTime.wHour); // Windows API call to grab hour value
-	accum += "_Min_"; // minute label
-	accum += std::to_string(SystemTime.wMinute); // Windows API call to grab minute value
-	accum += "_Sec_"; // second label
-	accum += std::to_string(SystemTime.wSecond); // Windows API call to grab second value
-
-	return accum;
-}
-
 
 /****************************************************************************
 * ClearDataBuffers
@@ -2053,8 +2084,11 @@ PICO_STATUS ClearDataBuffers(UNIT* unit)
 	for (int16_t i = 0; i < unit->channelCount; i++)
 	{
 		// for each channel, set a NULL pointer to the location of the buffer, set buffer size to 0, and segment index to 0
-		status = ps2000aSetDataBuffer(unit->handle, (PS2000A_CHANNEL)(i), NULL, 0, 0, PS2000A_RATIO_MODE_NONE);
-		printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aSetDataBuffer").c_str());
+		if ((status = ps2000aSetDataBuffer(unit->handle, (PS2000A_CHANNEL)(i), NULL, 0, 0, PS2000A_RATIO_MODE_NONE)) != PICO_OK)
+		{
+			printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aSetDataBuffer").c_str());
+			picoerrorLog(errorfp, status, __LINE__, __func__, "ps2000aSetDataBuffer");
+		}
 	}
 
 	return status;
@@ -2111,12 +2145,14 @@ PICO_STATUS SetTrigger(UNIT* unit,
 		autoTriggerMs)) != PICO_OK)
 	{
 		printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aSetTriggerChannelProperties").c_str());
+		picoerrorLog(errorfp, status, __LINE__, __func__, "ps2000aSetTriggerChannelProperties");
 		return status;
 	}
 
 	if ((status = ps2000aSetTriggerChannelConditions(unit->handle, triggerConditions, nTriggerConditions)) != PICO_OK)
 	{
 		printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aSetTriggerChannelConditions").c_str());
+		picoerrorLog(errorfp, status, __LINE__, __func__, "ps2000aSetTriggerChannelConditions");
 		return status;
 	}
 
@@ -2129,12 +2165,14 @@ PICO_STATUS SetTrigger(UNIT* unit,
 		directions->aux)) != PICO_OK)
 	{
 		printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aSetTriggerChannelDirections").c_str());
+		picoerrorLog(errorfp, status, __LINE__, __func__, "ps2000aSetTriggerChannelDirections");
 		return status;
 	}
 
 	if ((status = ps2000aSetTriggerDelay(unit->handle, delay)) != PICO_OK)
 	{
 		printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aSetTriggerDelay").c_str());
+		picoerrorLog(errorfp, status, __LINE__, __func__, "ps2000aSetTriggerDelay");
 		return status;
 	}
 
@@ -2147,6 +2185,7 @@ PICO_STATUS SetTrigger(UNIT* unit,
 		pwq->type)) != PICO_OK)
 	{
 		printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aSetPulseWidthQualifier").c_str());
+		picoerrorLog(errorfp, status, __LINE__, __func__, "ps2000aSetPulseWidthQualifier");
 		return status;
 	}
 
@@ -2171,18 +2210,20 @@ PICO_STATUS SetDefaults(UNIT* unit)
 	if (status = ps2000aSetEts(unit->handle, PS2000A_ETS_OFF, 0, 0, NULL) != PICO_OK)
 	{
 		printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aSetEts").c_str());
+		picoerrorLog(errorfp, status, __LINE__, __func__, "ps2000aSetEts");
 		return status;
 	}
 
 	for (int16_t i = 0; i < unit->channelCount; i++) // reset channels to most recent settings
 	{
-		status = ps2000aSetChannel(unit->handle, (PS2000A_CHANNEL)(PS2000A_CHANNEL_A + i),
-			unit->channelSettings[PS2000A_CHANNEL_A + i].enabled,
-			(PS2000A_COUPLING)unit->channelSettings[PS2000A_CHANNEL_A + i].DCcoupled,
-			(PS2000A_RANGE)unit->channelSettings[PS2000A_CHANNEL_A + i].range, analogOffset);
+		status = ps2000aSetChannel(unit->handle, (PS2000A_CHANNEL)(i),
+			unit->channelSettings[i].enabled,
+			(PS2000A_COUPLING)unit->channelSettings[i].DCcoupled,
+			(PS2000A_RANGE)unit->channelSettings[i].range, analogOffset);
 		if (status != PICO_OK)
 		{
 			printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aSetChannel").c_str());
+			picoerrorLog(errorfp, status, __LINE__, __func__, "ps2000aSetChannel");
 			return status;
 		}
 	}
@@ -2208,7 +2249,7 @@ PICO_STATUS SetDefaults(UNIT* unit)
 * Returns
 * - none
 ****************************************************************************/
-void PREF4 CallBackBlock(int16_t handle, PICO_STATUS status, void* pParameter)
+void __stdcall CallBackBlock(int16_t handle, PICO_STATUS status, void* pParameter)
 {
 	if (status != PICO_CANCELLED)
 	{
@@ -2293,17 +2334,14 @@ float_t ArrayAvg(int16_t buffer[], uint32_t sampleCount)
 *
 * Returns
 * - uint32_t* : pointer to buffer with 10 uint32_t's. The first entry in the
-* buffer contains the number of peaks found by the algorithm (1,2,3...) and
-* the remaining entries either contain the index of the detected peak
+* buffer contains the number of peaks found by the algorithm (1,2,3,...)
+* The remaining entries either contain the index of the detected peak
 * (peak 1's index is stored in buffer[1], the second peak in buffer[2], etc.)
 * or are left blank
 ****************************************************************************/
 uint32_t* BlockPeakFinding(int16_t buffer[], uint32_t sampleCount, UNIT* unit)
 {
 	uint32_t* indices = NULL;
-	// allocating space for 9 peaks (10 spaces, one reserved for counting the number of detected peaks) 
-	// is arbitrary, in this application we never saw more than 3 peaks in a captured waveform
-	// and the 3-peak events were relatively rare, but prolly not a big deal 
 	indices = (uint32_t*)malloc(10 * sizeof(uint32_t)); //first entry gets numpeaks, subsequent ones get index of the peak from the waveform
 	uint16_t numpeaks = 0;
 	int16_t* smoothbuffer = NULL;
@@ -2353,7 +2391,7 @@ uint32_t* BlockPeakFinding(int16_t buffer[], uint32_t sampleCount, UNIT* unit)
 				peakValue = smoothbuffer[i];
 			}
 		}
-		else if (smoothbuffer[i] > baseline && peakIndex != -1)
+		else if ((smoothbuffer[i] > baseline && peakIndex != -1) && indices != NULL)
 		{
 			indices[0] = ++numpeaks; // store number of found peaks in the array's first entry
 			indices[numpeaks] = peakIndex; // all the other peak index values follow in the array
@@ -2363,12 +2401,13 @@ uint32_t* BlockPeakFinding(int16_t buffer[], uint32_t sampleCount, UNIT* unit)
 		if (numpeaks > 8) // in practice we shouldn't need to find more than 2 peaks
 		{
 			printf("\nMaximum number of peaks (9) detected! Stopping the search now.\n");
+			printf("If this search is classifying \"noise\" as peaks, consider either raising the peak detection threshold.\n");
 			free(smoothbuffer); // no memory leaks
 			return indices;
 		}
 	}
 
-	if (peakIndex != -1)
+	if (peakIndex != -1 && indices != NULL)
 	{
 		indices[0] = ++numpeaks;
 		indices[numpeaks] = peakIndex;
@@ -2443,7 +2482,7 @@ uint32_t* BlockPeaktoPeak(UNIT* unit, int16_t buffer[], uint32_t sampleCount, ui
 * - feakfp : pointer to the file where peak info (not waveforms) are written to
 * - offset : the offset into the data buffer to start the display's slice. (normally 0)
 * - mode : ANALOGUE, DIGITAL, AGGREGATED, MIXED - just used ANALOGUE here
-* - etsModeSet: whether or not ETS Mode (see programmer's guide),
+* - etsModeSet: whether or not ETS Mode (see programmer's guide) is
 	turned on (turned off for our application)
 *
 * Returns
@@ -2458,7 +2497,6 @@ PICO_STATUS BlockDataHandler(UNIT* unit, FILE* peakfp, int32_t offset, MODE mode
 	int32_t sampleCount = 0;
 	int32_t pretriggersampleCount = 0;
 	int32_t maxSamples = 0;
-	int32_t timeIndisposed;
 	uint32_t downsampleratio = 1;
 	uint16_t numpeaks = 0;
 	uint32_t* indices = NULL; // array to hold numpeaks and the indices of such peaks
@@ -2478,10 +2516,8 @@ PICO_STATUS BlockDataHandler(UNIT* unit, FILE* peakfp, int32_t offset, MODE mode
 	{
 		printf("Error occured while partitioning the device's internal memory.\n");
 		printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aMemorySegments").c_str());
-		qinit = _kbhitinit();
-		printf("Press the \'Q\' key to exit the program.\n");
-		while (!_kbhitpoll(qinit));
-		exit(99); // exit program
+		picoerrorLog(errorfp, status, __LINE__, __func__, "ps2000aMemorySegments");
+		return status;
 	}
 
 	// Max sample count for the device is 33,554,342
@@ -2503,23 +2539,25 @@ PICO_STATUS BlockDataHandler(UNIT* unit, FILE* peakfp, int32_t offset, MODE mode
 		if ((status = ps2000aSetDataBuffer(unit->handle, PS2000A_CHANNEL_A, BufferInfo.driverBuffer, sampleCount, segmentIndex, ratioMode)) != PICO_OK)
 		{
 			printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aSetDataBuffer").c_str());
+			picoerrorLog(errorfp, status, __LINE__, __func__, "ps2000aSetDataBuffer");
 			return status;
 		}
 	}
 
-	/* Validate the current timebase index, and find the maximum number of samples and the time interval (in nanoseconds) */
-	while (ps2000aGetTimebase(unit->handle, g_timebase, sampleCount, &timeIntervalNanoseconds, g_oversample, &maxSamples, 0) != PICO_OK)
+	// Validate the current timebase index, and find the maximum number of samples and the time interval (in nanoseconds)
+	while ((status = ps2000aGetTimebase(unit->handle, g_timebase, sampleCount, &timeIntervalNanoseconds, g_oversample, &maxSamples, 0)) != PICO_OK)
 	{
 		g_timebase++; // this should never get incremented and just stay at 0 (so long as we're using single channel block mode)
 	}
 
-	/* Start it collecting, then wait for completion */
+	// Start it collecting, then wait for completion
 	g_ready = FALSE;
-	if ((status = ps2000aRunBlock(unit->handle, pretriggersampleCount, posttriggersampleCount, g_timebase, g_oversample, &timeIndisposed, 0, CallBackBlock, NULL)) != PICO_OK)
+	if ((status = ps2000aRunBlock(unit->handle, pretriggersampleCount, posttriggersampleCount, g_timebase, g_oversample, NULL, 0, CallBackBlock, NULL)) != PICO_OK)
 	{
 		printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aRunBlock").c_str());
+		picoerrorLog(errorfp, status, __LINE__, __func__, "ps2000aRunBlock");
+		return status;
 	}
-
 
 	printf("Waiting for trigger...Press \'Q\' to abort...");
 
@@ -2533,8 +2571,12 @@ PICO_STATUS BlockDataHandler(UNIT* unit, FILE* peakfp, int32_t offset, MODE mode
 	if (g_ready)
 	{
 		printf("Triggered!\n");
-		status = ps2000aGetValues(unit->handle, 0, (uint32_t*)&sampleCount, downsampleratio, ratioMode, 0, NULL);
-		printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aGetValues").c_str());
+		if ((status = ps2000aGetValues(unit->handle, 0, (uint32_t*)&sampleCount, downsampleratio, ratioMode, 0, NULL)) != PICO_OK)
+		{
+			printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aGetValues").c_str());
+			picoerrorLog(errorfp, status, __LINE__, __func__, "ps2000aGetValues");
+			return status;
+		}
 
 		indices = BlockPeaktoPeak(unit, BufferInfo.driverBuffer, sampleCount, timeIntervalNanoseconds, downsampleratio);
 		numpeaks = indices[0]; // numpeaks stored in the first array entry
@@ -2549,7 +2591,7 @@ PICO_STATUS BlockDataHandler(UNIT* unit, FILE* peakfp, int32_t offset, MODE mode
 				{
 					// give the file a time-dependent name to avoid file name collisions
 					wavefilename = "RAW_WAVEFORM_"; // reset the filename from the last block of multi-peak data
-					wavefilename += timeInfoFunc();
+					wavefilename += timeInfotoString();
 					wavefilename += ".csv";
 					fopen_s(&wavefp, wavefilename.c_str(), "w");
 
@@ -2557,24 +2599,16 @@ PICO_STATUS BlockDataHandler(UNIT* unit, FILE* peakfp, int32_t offset, MODE mode
 					{
 						printf("Writing the raw data to the disk file(%s)\n...", wavefilename.c_str());
 						fprintf(wavefp, "Block Data log\n\n");
-						fprintf(wavefp, "Results shown for each of the %d Channels are......\n", unit->channelCount);
-						fprintf(wavefp, "Time (ns), ADC Count, mV\n\n");
-						fprintf(wavefp, "Time (ns), ADC,  mV\n");
-
+						fprintf(wavefp, "Time (ns), ADC Count, mV\n");
 						for (int32_t i = 0; i < sampleCount; i++)
 						{
 							// Times printed in ns
-							// unsure what g_times does/ what data it holds, seems to always be 0
-							fprintf(wavefp, "%7d, ", g_times[PS2000A_CHANNEL_A] + (int32_t)(i * timeIntervalNanoseconds * downsampleratio));
-
-							if (unit->channelSettings[PS2000A_CHANNEL_A].enabled)
-							{
-								fprintf(wavefp,
-									"%d, %d",
-									BufferInfo.driverBuffer[i],
-									adc_to_mv(BufferInfo.driverBuffer[i], unit->channelSettings[PS2000A_CHANNEL_A].range, unit));
-							}
-							fprintf(wavefp, "\n");
+							// unsure of purpose of g_times, seems to always be 0 (option for timing offset?)
+							fprintf(wavefp,
+								"%d, %d, %d\n",
+								g_times[PS2000A_CHANNEL_A] + (int32_t)(i * timeIntervalNanoseconds * downsampleratio),
+								BufferInfo.driverBuffer[i],
+								adc_to_mv(BufferInfo.driverBuffer[i], unit->channelSettings[PS2000A_CHANNEL_A].range, unit));
 						}
 						printf("done.\n");
 						// update the number of waveforms to be saved
@@ -2604,7 +2638,7 @@ PICO_STATUS BlockDataHandler(UNIT* unit, FILE* peakfp, int32_t offset, MODE mode
 							BufferInfo.driverBuffer[indices[i]],
 							adc_to_mv(BufferInfo.driverBuffer[indices[i]], unit->channelSettings[PS2000A_CHANNEL_A].range, unit));
 					}
-					fprintf(peakfp, "T,"); // some arbitrary deliminating character between depths and time differences
+					fprintf(peakfp, "T,"); // some arbitrary deliminating character to separate peak depths and time differences
 					// print time differences (in ns) between the first peak and other peaks
 					for (uint16_t i = 2; i <= numpeaks; i++)
 					{
@@ -2632,8 +2666,11 @@ PICO_STATUS BlockDataHandler(UNIT* unit, FILE* peakfp, int32_t offset, MODE mode
 		_getch();
 	}
 
-	status = ps2000aStop(unit->handle);
-	printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aStop").c_str());
+	if ((status = ps2000aStop(unit->handle)) != PICO_OK)
+	{
+		printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aStop").c_str());
+		picoerrorLog(errorfp, status, __LINE__, __func__, "ps2000aStop");
+	}
 
 	if (wavefp != NULL)
 	{
@@ -2656,8 +2693,12 @@ PICO_STATUS BlockDataHandler(UNIT* unit, FILE* peakfp, int32_t offset, MODE mode
 
 	printf("Total Number of Multi-Peak Events Recorded: %I64d\n", g_nummultipeakevents);
 
-	status = ClearDataBuffers(unit); // clear the device's internal buffers before the next run just to be thorough, not really necessary
-	printf("%s", picoerrortoString(status, __LINE__, __func__, "ClearDataBuffers").c_str());
+	// clear the device's internal buffers before the next run just to be thorough, not really necessary
+	if ((status = ClearDataBuffers(unit)) != PICO_OK)
+	{
+		printf("%s", picoerrortoString(status, __LINE__, __func__, "ClearDataBuffers").c_str());
+		picoerrorLog(errorfp, status, __LINE__, __func__, "ClearDataBuffers");
+	}
 	return status;
 }
 
@@ -2703,11 +2744,12 @@ PICO_STATUS CollectBlockTriggered(UNIT* unit, FILE* peakfp)
 		int16_t	triggerVoltage = mv_to_adc(g_trigthresh, unit->channelSettings[PS2000A_CHANNEL_A].range, unit);
 
 		// some of the author's/ SDK's defined structs used to set up the trigger
+		// Only triggering once so hyteresis doesn't matter, but may be better to set to 0 for clarity
 		PS2000A_TRIGGER_CHANNEL_PROPERTIES sourceDetails = {
 			triggerVoltage,
-			256 * 10,
+			0,
 			triggerVoltage,
-			256 * 10,
+			0,
 			PS2000A_CHANNEL_A,
 			PS2000A_LEVEL };
 
@@ -2730,9 +2772,6 @@ PICO_STATUS CollectBlockTriggered(UNIT* unit, FILE* peakfp)
 			PS2000A_NONE,			// ext
 			PS2000A_NONE };			// aux
 
-		// not using pulse width qualifier for our trigger here,
-		// but it's still needed as a parameter for the SetTrigger function
-		// so I'm just going to leave it in
 		PWQ pulseWidth;
 		memset(&pulseWidth, 0, sizeof(PWQ)); // set all the memory allocated for the struct to 0
 
@@ -2743,6 +2782,8 @@ PICO_STATUS CollectBlockTriggered(UNIT* unit, FILE* peakfp)
 		printf(g_scaleVoltages ? "mV\n" : "ADC Counts\n");
 
 		printf("\n\nPress \'Q\' once to stop data collection at any point.\n\n");
+		printf("Errors returned by calls to Pico Technology's library functions will be displayed in the following format:\n");
+		printf("[Line Number in Source File] CallingScope::FunctionThatReturnedError ------ Error (Error Code)\n");
 		printf("Press a key to start...\n");
 		_getch();
 		g_firstRun = FALSE;
@@ -2750,19 +2791,26 @@ PICO_STATUS CollectBlockTriggered(UNIT* unit, FILE* peakfp)
 		if ((status = SetDefaults(unit)) != PICO_OK)
 		{
 			printf("%s", picoerrortoString(status, __LINE__, __func__, "SetDefaults").c_str());
+			picoerrorLog(errorfp, status, __LINE__, __func__, "SetDefaults");
 			return status;
 		}
 
-		/* Trigger setup/ enabled per settings detailed in the above structs */
+		// Trigger setup/ enabled per settings detailed in the above structs
 		if ((status = SetTrigger(unit, &sourceDetails, 1, &conditions, 1, &directions, &pulseWidth, 0, 0, 0, 0, 0)) != PICO_OK)
 		{
 			printf("%s", picoerrortoString(status, __LINE__, __func__, "SetTrigger").c_str());
+			picoerrorLog(errorfp, status, __LINE__, __func__, "SetTrigger");
 			return status;
 		}
 	}
 
-	status = BlockDataHandler(unit, peakfp, 0, ANALOGUE, FALSE); // set up the scope for data collection and collect it
-	printf("%s", picoerrortoString(status, __LINE__, __func__, "BlockDataHandler").c_str());
+	// set up the scope for data collection and collect it
+	if ((status = BlockDataHandler(unit, peakfp, 0, ANALOGUE, FALSE)) != PICO_OK)
+	{
+		printf("%s", picoerrortoString(status, __LINE__, __func__, "BlockDataHandler").c_str());
+		picoerrorLog(errorfp, status, __LINE__, __func__, "BlockDataHandler");
+	}
+
 	return status;
 }
 
@@ -2791,12 +2839,11 @@ PICO_STATUS get_info(UNIT* unit)
 									"Firmware 1",
 									"Firmware 2" };
 
-	int16_t i, r = 0;
+	int16_t requiredSize;
 	int8_t line[80];
 	PICO_STATUS status = PICO_OK;
 	int16_t numChannels = DUAL_SCOPE;
 	int8_t channelNum = 0;
-	int8_t character = 'A';
 
 	unit->signalGenerator = TRUE;
 	unit->ETS = FALSE;
@@ -2808,11 +2855,12 @@ PICO_STATUS get_info(UNIT* unit)
 
 	if (unit->handle)
 	{
-		for (i = 0; i < 11; i++)
+		for (int16_t i = 0; i < 11; i++)
 		{
-			if ((status = ps2000aGetUnitInfo(unit->handle, (int8_t*)line, sizeof(line), &r, i)) != PICO_OK)
+			if ((status = ps2000aGetUnitInfo(unit->handle, (int8_t*)line, sizeof(line), &requiredSize, i)) != PICO_OK)
 			{
 				printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aGetUnitInfo").c_str());
+				picoerrorLog(errorfp, status, __LINE__, __func__, "ps2000aGetUnitInfo");
 				return status;
 			}
 
@@ -2820,7 +2868,7 @@ PICO_STATUS get_info(UNIT* unit)
 			{
 				// Check if device has four channels
 				/*
-				* have to do a little casting here because visual studio
+				* have to do a little casting here because Visual Studio
 				* doesn't seem to want to compile it the the way
 				* the original author wrote it some reason
 				*/
@@ -2836,7 +2884,7 @@ PICO_STATUS get_info(UNIT* unit)
 				// Set first range for voltage if device is a 2206/7/8, 2206/7/8A or 2205 MSO
 				if (numChannels == DUAL_SCOPE)
 				{
-					// visual studio doesn't like strcmpi function, using _strcmpi instead
+					// Visual Studio doesn't like strcmpi function, using _strcmpi instead
 					if (strlen((const char*)line) == 4 || (strlen((const char*)line) == 5 && _strcmpi((const char*)&line[4], "A") == 0) || (_strcmpi((const char*)line, "2205MSO")) == 0)
 					{
 						unit->firstRange = PS2000A_50MV;
@@ -2853,6 +2901,7 @@ PICO_STATUS get_info(UNIT* unit)
 			printf("%s: %s\n", description[i], line);
 		}
 	}
+
 	return status;
 }
 
@@ -2868,49 +2917,51 @@ PICO_STATUS get_info(UNIT* unit)
 ***************************************************************************/
 PICO_STATUS OpenDevice(UNIT* unit)
 {
-	int16_t value = 0;
-	int32_t i;
+	int16_t maxvalue = 0;
 	PWQ pulseWidth;
 	TRIGGER_DIRECTIONS directions;
 	int16_t qinit = -1;
 	int16_t rangeselect; // range selected in mV
-	PS2000A_RANGE scoperange = PS2000A_2V; // (PS2000A_RANGE)inputRanges[unit->firstRange]; (this would be nice but we don't have the device info yet //scope range, typically want PS2000A_2V for this application
+	PS2000A_RANGE scoperange = PS2000A_2V; // scope range, typically want PS2000A_2V for this application
 	PICO_STATUS status = PICO_OK;
 
 	printf("Opening device...");
 
-	status = ps2000aOpenUnit(&(unit->handle), NULL);
-
-	printf("done.\n");
-	printf("Handle: %d\n", unit->handle);
-
-	if (status != PICO_OK)
+	if ((status = ps2000aOpenUnit(&(unit->handle), NULL)) != PICO_OK)
 	{
 		printf("Error opening the device! Ensure it is plugged in.\n");
 		printf("If this is your first time attempting to run the program, try restarting your computer.\n");
 		printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aOpenUnit").c_str());
-		qinit = _kbhitinit();
-		printf("Press the \'Q\' key to exit the program.\n");
-		while (!_kbhitpoll(qinit));
-		exit(99); // exit program
+		picoerrorLog(errorfp, status, __LINE__, __func__, "ps2000aOpenUnit");
+		return status;
 	}
 
-	printf("Device opened successfully, cycle %I64d\n\n", ++g_cycles);
+	printf("done.\n");
+	printf("Handle: %d\n", unit->handle);
 
-	// setup device
+	printf("Device opened successfully\n\n");
+
+	// gather device-specific information
 	get_info(unit);
 
+	// flush the data buffers from the start just to be sure
 	printf("Flushing the data buffers...");
-	status = ClearDataBuffers(unit); // flush the data buffers from the start just to be sure
-	printf("%s", picoerrortoString(status, __LINE__, __func__, "ClearDataBuffers").c_str());
+	if ((status = ClearDataBuffers(unit)) != PICO_OK)
+	{
+		printf("%s", picoerrortoString(status, __LINE__, __func__, "ClearDataBuffers").c_str());
+		picoerrorLog(errorfp, status, __LINE__, __func__, "ClearDataBuffers");
+	}
 	printf("done.\n");
 
 	// max value needed for conversion between adc and mv
-	status = ps2000aMaximumValue(unit->handle, &value);
-	unit->maxValue = value;
-	printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aMaximumValue").c_str());
+	if ((status = ps2000aMaximumValue(unit->handle, &maxvalue)) != PICO_OK)
+	{
+		printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aMaximumValue").c_str());
+		picoerrorLog(errorfp, status, __LINE__, __func__, "ps2000aMaximumValue");
+		return status;
+	}
+	unit->maxValue = maxvalue;
 
-	//param select here
 	rangeselect = unit->firstRange - 1; // make initial value unacceptable so we enter the while loop
 	std::cin.clear(); // flush the input buffer
 	while (!(rangeselect > unit->firstRange && rangeselect < unit->lastRange) // make sure input falls in an acceptable range
@@ -2925,6 +2976,7 @@ PICO_STATUS OpenDevice(UNIT* unit)
 		}
 
 		printf("Range: ");
+
 		std::cin >> rangeselect; // take in index
 		// offset needed because the first range supported by our device 
 		// isn't the first range in input ranges data type, which lists all
@@ -2937,9 +2989,7 @@ PICO_STATUS OpenDevice(UNIT* unit)
 
 	printf("Selected Range: %d mV\n", scoperange);
 
-	printf("Selected Trigger Threshold: %d mV \n", g_trigthresh);
-
-	for (i = 0; i < unit->channelCount; i++)
+	for (int16_t i = 0; i < unit->channelCount; i++)
 	{
 		if (i == PS2000A_CHANNEL_A) // only enable Channel A
 		{
@@ -2958,7 +3008,7 @@ PICO_STATUS OpenDevice(UNIT* unit)
 
 	if (g_firstRun == TRUE)
 	{
-		/* make initial value unacceptable so we enter the while loop (value is 1 below the scope's supported range) */
+		// make initial value unacceptable so we enter the while loop (value is 1 below the scope's supported range)
 		g_peakthresh = -inputRanges[unit->channelSettings[PS2000A_CHANNEL_A].range] - 1;
 		std::cin.clear(); // flush the input buffer
 		while (!(g_peakthresh >= -inputRanges[unit->channelSettings[PS2000A_CHANNEL_A].range] // make sure input falls in an acceptable range
@@ -2984,13 +3034,17 @@ PICO_STATUS OpenDevice(UNIT* unit)
 	if ((status = SetDefaults(unit)) != PICO_OK)
 	{
 		printf("%s", picoerrortoString(status, __LINE__, __func__, "SetDefaults").c_str());
+		picoerrorLog(errorfp, status, __LINE__, __func__, "SetDefaults");
 		return status;
 	}
 
-	/* Trigger disabled	(for now) */
+	// Trigger disabled	(for now)
 	// not actually setting trigger here so we won't kill program if it fails to set
-	status = SetTrigger(unit, NULL, 0, NULL, 0, &directions, &pulseWidth, 0, 0, 0, 0, 0);
-	printf("%s", picoerrortoString(status, __LINE__, __func__, "SetTrigger").c_str());
+	if ((status = SetTrigger(unit, NULL, 0, NULL, 0, &directions, &pulseWidth, 0, 0, 0, 0, 0)) != PICO_OK)
+	{
+		printf("%s", picoerrortoString(status, __LINE__, __func__, "SetTrigger").c_str());
+		picoerrorLog(errorfp, status, __LINE__, __func__, "SetTrigger");
+	}
 
 	return status;
 }
@@ -3012,7 +3066,18 @@ void CloseDevice(UNIT* unit)
 	if (status != PICO_OK)
 	{
 		printf("Failed to properly close the device.\n");
+		printf("Handle: %d\n", unit->handle);
 		printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aCloseUnit").c_str());
+		picoerrorLog(errorfp, status, __LINE__, __func__, "ps2000aCloseUnit");
+		// close the files in the case of a failure on device closure
+		if (peakfp != NULL)
+		{
+			fclose(peakfp); // close the peak info file
+		}
+		if (errorfp != NULL)
+		{
+			fclose(errorfp); // close the error log file
+		}
 		qinit = _kbhitinit();
 		printf("Press the \'Q\' key to exit the program.\n");
 		while (!_kbhitpoll(qinit));
@@ -3028,11 +3093,36 @@ int main()
 	char ch; // program selection choice
 	g_qinit = _kbhitinit(); // Initialize state of Q key so that we can quit later on in the program (global)
 	int16_t qinit; // Initialize state of Q key so that we can quit later on in the program (for connection checks between runs)
+	std::string starttimeinfo;
+
+	// give the error log file a unique (time dependent) name so we don't overwrite anything
+	starttimeinfo = timeInfotoString();
+	errorfilename += starttimeinfo;
+	errorfilename += ".txt";
+
+	fopen_s(&errorfp, errorfilename.c_str(), "w");
+
+	if (errorfp != NULL)
+	{
+		printf("Successfully opened the peak data disk file (%s)\n", errorfilename.c_str());
+		fprintf(errorfp, "Pico Error Log:\n\n");
+	}
+	else
+	{
+		printf("Cannot open the error log file \n%s\n for writing.\n"
+			"Please ensure that you have permission to access and/ or the file isn't currently open.\n", errorfilename.c_str());
+		printf("The program will continue, but errors will not be logged.\n");
+	}
 
 	// open the device, get its handle for the UNIT struct
 	if ((status = OpenDevice(&unit)) != PICO_OK)
 	{
 		printf("%s", picoerrortoString(status, __LINE__, __func__, "OpenDevice").c_str());
+		picoerrorLog(errorfp, status, __LINE__, __func__, "OpenDevice");
+		if (errorfp != NULL)
+		{
+			fclose(errorfp);
+		}
 		return -1;
 	}
 
@@ -3056,11 +3146,11 @@ int main()
 	{
 	case 'B': // collect block triggered
 	{
-		/* give the peak info file a unique (time dependent) name so we don't overwrite anything */
-		peakfilename += timeInfoFunc();
+		// give the peak info file a unique (time dependent) name so we don't overwrite anything
+		// want this name matching with the error to make checking stuff later easier
+		peakfilename += starttimeinfo;
 		peakfilename += ".csv";
 
-		FILE* peakfp = NULL; // file to hold peak info
 		fopen_s(&peakfp, peakfilename.c_str(), "w");
 
 		if (peakfp != NULL)
@@ -3095,7 +3185,7 @@ int main()
 
 		}
 
-		printf("Selected number of multi-peak waveforms to save: %d\n", g_numwavestosaved);
+		printf("Selected number of multi-peak waveforms to save: %I64d\n", g_numwavestosaved);
 
 		while (!_kbhitpoll(g_qinit))
 		{
@@ -3107,11 +3197,20 @@ int main()
 				g_qinit = _kbhitinit();
 			}
 
-			/* make sure the device is still connected */
+			// make sure the device is still connected
 			if ((status = ps2000aPingUnit(unit.handle)) != PICO_OK)
 			{
 				printf("Issue with USB connection to device!\n");
 				printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aPingUnit").c_str());
+				picoerrorLog(errorfp, status, __LINE__, __func__, "ps2000aPingUnit");
+				if (peakfp != NULL)
+				{
+					fclose(peakfp); // close the peak info file
+				}
+				if (errorfp != NULL)
+				{
+					fclose(errorfp); // close the error log file
+				}
 				qinit = _kbhitinit();
 				printf("Press the \'Q\' key to exit the program.\n");
 				while (!_kbhitpoll(qinit));
@@ -3119,14 +3218,21 @@ int main()
 			}
 
 			// call the data collection routine
-			status = CollectBlockTriggered(&unit, peakfp);
-			/* if it returns an error we can just run again for another try-> don't return the error code, just print */
-			printf("%s", picoerrortoString(status, __LINE__, __func__, "CollectBlockTriggered").c_str());
+			// if it returns an error we can just run again for another try-> don't return the error code, just print 
+			if ((status = CollectBlockTriggered(&unit, peakfp)) != PICO_OK)
+			{
+				printf("%s", picoerrortoString(status, __LINE__, __func__, "CollectBlockTriggered").c_str());
+				picoerrorLog(errorfp, status, __LINE__, __func__, "CollectBlockTriggered");
+			}
 		}
 
 		if (peakfp != NULL)
 		{
 			fclose(peakfp); // close the peak info file
+		}
+		if (errorfp != NULL)
+		{
+			fclose(errorfp); // close the error log file
 		}
 	}
 	break;
@@ -3144,7 +3250,6 @@ int main()
 	break;
 	}
 
-	// CloseDevice exits on failure so need for a status check here
 	CloseDevice(&unit); // close the device now that we're done
 
 	return 0;
