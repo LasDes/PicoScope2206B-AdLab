@@ -136,8 +136,8 @@ int32_t			g_trigthresh; // threshold value for our initial trigger in mV
 int32_t			g_peakthresh; // threshold for our peak finding alg in mV
 int64_t			g_numwavestosaved = 0; // number of waveforms to save in a given session, might want to rename
 uint64_t		g_nummultipeakevents = 0; // how many multi-peak events we've recorded so far (just peak info)
-FILE* peakfp = NULL; // file to hold peak info, making this global so it doesn't have to be passed to every function
-FILE* errorfp = NULL; // file to hold error log, making this global so it doesn't have to be passed to every function
+FILE* g_peakfp = NULL; // file to hold peak info, making this global so it doesn't have to be passed to every function
+FILE* g_errorfp = NULL; // file to hold error log, making this global so it doesn't have to be passed to every function
 
 // Prefixes for file names for raw waveform data and peak to peak info
 std::string wavefilename = "RAW_WAVEFORM_";
@@ -2087,7 +2087,7 @@ PICO_STATUS ClearDataBuffers(UNIT* unit)
 		if ((status = ps2000aSetDataBuffer(unit->handle, (PS2000A_CHANNEL)(i), NULL, 0, 0, PS2000A_RATIO_MODE_NONE)) != PICO_OK)
 		{
 			printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aSetDataBuffer").c_str());
-			picoerrorLog(errorfp, status, __LINE__, __func__, "ps2000aSetDataBuffer");
+			picoerrorLog(g_errorfp, status, __LINE__, __func__, "ps2000aSetDataBuffer");
 		}
 	}
 
@@ -2145,14 +2145,14 @@ PICO_STATUS SetTrigger(UNIT* unit,
 		autoTriggerMs)) != PICO_OK)
 	{
 		printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aSetTriggerChannelProperties").c_str());
-		picoerrorLog(errorfp, status, __LINE__, __func__, "ps2000aSetTriggerChannelProperties");
+		picoerrorLog(g_errorfp, status, __LINE__, __func__, "ps2000aSetTriggerChannelProperties");
 		return status;
 	}
 
 	if ((status = ps2000aSetTriggerChannelConditions(unit->handle, triggerConditions, nTriggerConditions)) != PICO_OK)
 	{
 		printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aSetTriggerChannelConditions").c_str());
-		picoerrorLog(errorfp, status, __LINE__, __func__, "ps2000aSetTriggerChannelConditions");
+		picoerrorLog(g_errorfp, status, __LINE__, __func__, "ps2000aSetTriggerChannelConditions");
 		return status;
 	}
 
@@ -2165,14 +2165,14 @@ PICO_STATUS SetTrigger(UNIT* unit,
 		directions->aux)) != PICO_OK)
 	{
 		printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aSetTriggerChannelDirections").c_str());
-		picoerrorLog(errorfp, status, __LINE__, __func__, "ps2000aSetTriggerChannelDirections");
+		picoerrorLog(g_errorfp, status, __LINE__, __func__, "ps2000aSetTriggerChannelDirections");
 		return status;
 	}
 
 	if ((status = ps2000aSetTriggerDelay(unit->handle, delay)) != PICO_OK)
 	{
 		printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aSetTriggerDelay").c_str());
-		picoerrorLog(errorfp, status, __LINE__, __func__, "ps2000aSetTriggerDelay");
+		picoerrorLog(g_errorfp, status, __LINE__, __func__, "ps2000aSetTriggerDelay");
 		return status;
 	}
 
@@ -2185,7 +2185,7 @@ PICO_STATUS SetTrigger(UNIT* unit,
 		pwq->type)) != PICO_OK)
 	{
 		printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aSetPulseWidthQualifier").c_str());
-		picoerrorLog(errorfp, status, __LINE__, __func__, "ps2000aSetPulseWidthQualifier");
+		picoerrorLog(g_errorfp, status, __LINE__, __func__, "ps2000aSetPulseWidthQualifier");
 		return status;
 	}
 
@@ -2210,7 +2210,7 @@ PICO_STATUS SetDefaults(UNIT* unit)
 	if (status = ps2000aSetEts(unit->handle, PS2000A_ETS_OFF, 0, 0, NULL) != PICO_OK)
 	{
 		printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aSetEts").c_str());
-		picoerrorLog(errorfp, status, __LINE__, __func__, "ps2000aSetEts");
+		picoerrorLog(g_errorfp, status, __LINE__, __func__, "ps2000aSetEts");
 		return status;
 	}
 
@@ -2223,7 +2223,7 @@ PICO_STATUS SetDefaults(UNIT* unit)
 		if (status != PICO_OK)
 		{
 			printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aSetChannel").c_str());
-			picoerrorLog(errorfp, status, __LINE__, __func__, "ps2000aSetChannel");
+			picoerrorLog(g_errorfp, status, __LINE__, __func__, "ps2000aSetChannel");
 			return status;
 		}
 	}
@@ -2488,7 +2488,7 @@ uint32_t* BlockPeaktoPeak(UNIT* unit, int16_t buffer[], uint32_t sampleCount, ui
 * Returns
 * - PICO_STATUS : to indicate success, or if an error occurred
 ****************************************************************************/
-PICO_STATUS BlockDataHandler(UNIT* unit, FILE* peakfp, int32_t offset, MODE mode, int16_t etsModeSet)
+PICO_STATUS BlockDataHandler(UNIT* unit, int32_t offset, MODE mode, int16_t etsModeSet)
 {
 	PICO_STATUS status = PICO_OK;
 	uint32_t segmentIndex = 0;
@@ -2516,7 +2516,7 @@ PICO_STATUS BlockDataHandler(UNIT* unit, FILE* peakfp, int32_t offset, MODE mode
 	{
 		printf("Error occured while partitioning the device's internal memory.\n");
 		printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aMemorySegments").c_str());
-		picoerrorLog(errorfp, status, __LINE__, __func__, "ps2000aMemorySegments");
+		picoerrorLog(g_errorfp, status, __LINE__, __func__, "ps2000aMemorySegments");
 		return status;
 	}
 
@@ -2539,7 +2539,7 @@ PICO_STATUS BlockDataHandler(UNIT* unit, FILE* peakfp, int32_t offset, MODE mode
 		if ((status = ps2000aSetDataBuffer(unit->handle, PS2000A_CHANNEL_A, BufferInfo.driverBuffer, sampleCount, segmentIndex, ratioMode)) != PICO_OK)
 		{
 			printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aSetDataBuffer").c_str());
-			picoerrorLog(errorfp, status, __LINE__, __func__, "ps2000aSetDataBuffer");
+			picoerrorLog(g_errorfp, status, __LINE__, __func__, "ps2000aSetDataBuffer");
 			return status;
 		}
 	}
@@ -2555,7 +2555,7 @@ PICO_STATUS BlockDataHandler(UNIT* unit, FILE* peakfp, int32_t offset, MODE mode
 	if ((status = ps2000aRunBlock(unit->handle, pretriggersampleCount, posttriggersampleCount, g_timebase, g_oversample, NULL, 0, CallBackBlock, NULL)) != PICO_OK)
 	{
 		printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aRunBlock").c_str());
-		picoerrorLog(errorfp, status, __LINE__, __func__, "ps2000aRunBlock");
+		picoerrorLog(g_errorfp, status, __LINE__, __func__, "ps2000aRunBlock");
 		return status;
 	}
 
@@ -2574,7 +2574,7 @@ PICO_STATUS BlockDataHandler(UNIT* unit, FILE* peakfp, int32_t offset, MODE mode
 		if ((status = ps2000aGetValues(unit->handle, 0, (uint32_t*)&sampleCount, downsampleratio, ratioMode, 0, NULL)) != PICO_OK)
 		{
 			printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aGetValues").c_str());
-			picoerrorLog(errorfp, status, __LINE__, __func__, "ps2000aGetValues");
+			picoerrorLog(g_errorfp, status, __LINE__, __func__, "ps2000aGetValues");
 			return status;
 		}
 
@@ -2629,23 +2629,23 @@ PICO_STATUS BlockDataHandler(UNIT* unit, FILE* peakfp, int32_t offset, MODE mode
 					printf("The maximum number of waveforms to be recorded has been reached.\n");
 					printf("Peak information for this waveform will still be saved. (%s)\n", peakfilename.c_str());
 				}
-				if (peakfp != NULL)
+				if (g_peakfp != NULL)
 				{
 					// print peak depths both as adc counts and in mV
 					for (uint16_t i = 1; i <= numpeaks; i++)
 					{
-						fprintf(peakfp, "%d,%d,",
+						fprintf(g_peakfp, "%d,%d,",
 							BufferInfo.driverBuffer[indices[i]],
 							adc_to_mv(BufferInfo.driverBuffer[indices[i]], unit->channelSettings[PS2000A_CHANNEL_A].range, unit));
 					}
-					fprintf(peakfp, "T,"); // some arbitrary deliminating character to separate peak depths and time differences
+					fprintf(g_peakfp, "T,"); // some arbitrary deliminating character to separate peak depths and time differences
 					// print time differences (in ns) between the first peak and other peaks
 					for (uint16_t i = 2; i <= numpeaks; i++)
 					{
-						fprintf(peakfp, "%d,", (indices[i] - indices[1]) * timeIntervalNanoseconds * downsampleratio);
+						fprintf(g_peakfp, "%d,", (indices[i] - indices[1]) * timeIntervalNanoseconds * downsampleratio);
 					}
 					// if the program wrote a waveform file, its name gets written to the peak file
-					fprintf(peakfp, (g_numwavestosaved || lasttosave) ? "%s\n" : "No file\n", wavefilename.c_str());
+					fprintf(g_peakfp, (g_numwavestosaved || lasttosave) ? "%s\n" : "No file\n", wavefilename.c_str());
 				}
 				else
 				{
@@ -2669,7 +2669,7 @@ PICO_STATUS BlockDataHandler(UNIT* unit, FILE* peakfp, int32_t offset, MODE mode
 	if ((status = ps2000aStop(unit->handle)) != PICO_OK)
 	{
 		printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aStop").c_str());
-		picoerrorLog(errorfp, status, __LINE__, __func__, "ps2000aStop");
+		picoerrorLog(g_errorfp, status, __LINE__, __func__, "ps2000aStop");
 	}
 
 	if (wavefp != NULL)
@@ -2697,7 +2697,7 @@ PICO_STATUS BlockDataHandler(UNIT* unit, FILE* peakfp, int32_t offset, MODE mode
 	if ((status = ClearDataBuffers(unit)) != PICO_OK)
 	{
 		printf("%s", picoerrortoString(status, __LINE__, __func__, "ClearDataBuffers").c_str());
-		picoerrorLog(errorfp, status, __LINE__, __func__, "ClearDataBuffers");
+		picoerrorLog(g_errorfp, status, __LINE__, __func__, "ClearDataBuffers");
 	}
 	return status;
 }
@@ -2716,7 +2716,7 @@ PICO_STATUS BlockDataHandler(UNIT* unit, FILE* peakfp, int32_t offset, MODE mode
 * Returns
 * - PICO_STATUS : to indicate success, or if an error occurred
 ****************************************************************************/
-PICO_STATUS CollectBlockTriggered(UNIT* unit, FILE* peakfp)
+PICO_STATUS CollectBlockTriggered(UNIT* unit)
 {
 	PICO_STATUS status = PICO_OK;
 
@@ -2791,7 +2791,7 @@ PICO_STATUS CollectBlockTriggered(UNIT* unit, FILE* peakfp)
 		if ((status = SetDefaults(unit)) != PICO_OK)
 		{
 			printf("%s", picoerrortoString(status, __LINE__, __func__, "SetDefaults").c_str());
-			picoerrorLog(errorfp, status, __LINE__, __func__, "SetDefaults");
+			picoerrorLog(g_errorfp, status, __LINE__, __func__, "SetDefaults");
 			return status;
 		}
 
@@ -2799,16 +2799,16 @@ PICO_STATUS CollectBlockTriggered(UNIT* unit, FILE* peakfp)
 		if ((status = SetTrigger(unit, &sourceDetails, 1, &conditions, 1, &directions, &pulseWidth, 0, 0, 0, 0, 0)) != PICO_OK)
 		{
 			printf("%s", picoerrortoString(status, __LINE__, __func__, "SetTrigger").c_str());
-			picoerrorLog(errorfp, status, __LINE__, __func__, "SetTrigger");
+			picoerrorLog(g_errorfp, status, __LINE__, __func__, "SetTrigger");
 			return status;
 		}
 	}
 
 	// set up the scope for data collection and collect it
-	if ((status = BlockDataHandler(unit, peakfp, 0, ANALOGUE, FALSE)) != PICO_OK)
+	if ((status = BlockDataHandler(unit, 0, ANALOGUE, FALSE)) != PICO_OK)
 	{
 		printf("%s", picoerrortoString(status, __LINE__, __func__, "BlockDataHandler").c_str());
-		picoerrorLog(errorfp, status, __LINE__, __func__, "BlockDataHandler");
+		picoerrorLog(g_errorfp, status, __LINE__, __func__, "BlockDataHandler");
 	}
 
 	return status;
@@ -2860,7 +2860,7 @@ PICO_STATUS get_info(UNIT* unit)
 			if ((status = ps2000aGetUnitInfo(unit->handle, (int8_t*)line, sizeof(line), &requiredSize, i)) != PICO_OK)
 			{
 				printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aGetUnitInfo").c_str());
-				picoerrorLog(errorfp, status, __LINE__, __func__, "ps2000aGetUnitInfo");
+				picoerrorLog(g_errorfp, status, __LINE__, __func__, "ps2000aGetUnitInfo");
 				return status;
 			}
 
@@ -2932,7 +2932,7 @@ PICO_STATUS OpenDevice(UNIT* unit)
 		printf("Error opening the device! Ensure it is plugged in.\n");
 		printf("If this is your first time attempting to run the program, try restarting your computer.\n");
 		printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aOpenUnit").c_str());
-		picoerrorLog(errorfp, status, __LINE__, __func__, "ps2000aOpenUnit");
+		picoerrorLog(g_errorfp, status, __LINE__, __func__, "ps2000aOpenUnit");
 		return status;
 	}
 
@@ -2949,7 +2949,7 @@ PICO_STATUS OpenDevice(UNIT* unit)
 	if ((status = ClearDataBuffers(unit)) != PICO_OK)
 	{
 		printf("%s", picoerrortoString(status, __LINE__, __func__, "ClearDataBuffers").c_str());
-		picoerrorLog(errorfp, status, __LINE__, __func__, "ClearDataBuffers");
+		picoerrorLog(g_errorfp, status, __LINE__, __func__, "ClearDataBuffers");
 	}
 	printf("done.\n");
 
@@ -2957,7 +2957,7 @@ PICO_STATUS OpenDevice(UNIT* unit)
 	if ((status = ps2000aMaximumValue(unit->handle, &maxvalue)) != PICO_OK)
 	{
 		printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aMaximumValue").c_str());
-		picoerrorLog(errorfp, status, __LINE__, __func__, "ps2000aMaximumValue");
+		picoerrorLog(g_errorfp, status, __LINE__, __func__, "ps2000aMaximumValue");
 		return status;
 	}
 	unit->maxValue = maxvalue;
@@ -3034,7 +3034,7 @@ PICO_STATUS OpenDevice(UNIT* unit)
 	if ((status = SetDefaults(unit)) != PICO_OK)
 	{
 		printf("%s", picoerrortoString(status, __LINE__, __func__, "SetDefaults").c_str());
-		picoerrorLog(errorfp, status, __LINE__, __func__, "SetDefaults");
+		picoerrorLog(g_errorfp, status, __LINE__, __func__, "SetDefaults");
 		return status;
 	}
 
@@ -3043,7 +3043,7 @@ PICO_STATUS OpenDevice(UNIT* unit)
 	if ((status = SetTrigger(unit, NULL, 0, NULL, 0, &directions, &pulseWidth, 0, 0, 0, 0, 0)) != PICO_OK)
 	{
 		printf("%s", picoerrortoString(status, __LINE__, __func__, "SetTrigger").c_str());
-		picoerrorLog(errorfp, status, __LINE__, __func__, "SetTrigger");
+		picoerrorLog(g_errorfp, status, __LINE__, __func__, "SetTrigger");
 	}
 
 	return status;
@@ -3068,15 +3068,15 @@ void CloseDevice(UNIT* unit)
 		printf("Failed to properly close the device.\n");
 		printf("Handle: %d\n", unit->handle);
 		printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aCloseUnit").c_str());
-		picoerrorLog(errorfp, status, __LINE__, __func__, "ps2000aCloseUnit");
+		picoerrorLog(g_errorfp, status, __LINE__, __func__, "ps2000aCloseUnit");
 		// close the files in the case of a failure on device closure
-		if (peakfp != NULL)
+		if (g_peakfp != NULL)
 		{
-			fclose(peakfp); // close the peak info file
+			fclose(g_peakfp); // close the peak info file
 		}
-		if (errorfp != NULL)
+		if (g_errorfp != NULL)
 		{
-			fclose(errorfp); // close the error log file
+			fclose(g_errorfp); // close the error log file
 		}
 		qinit = _kbhitinit();
 		printf("Press the \'Q\' key to exit the program.\n");
@@ -3100,12 +3100,12 @@ int main()
 	errorfilename += starttimeinfo;
 	errorfilename += ".txt";
 
-	fopen_s(&errorfp, errorfilename.c_str(), "w");
+	fopen_s(&g_errorfp, errorfilename.c_str(), "w");
 
-	if (errorfp != NULL)
+	if (g_errorfp != NULL)
 	{
-		printf("Successfully opened the peak data disk file (%s)\n", errorfilename.c_str());
-		fprintf(errorfp, "Pico Error Log:\n\n");
+		printf("Successfully opened the error log disk file (%s)\n", errorfilename.c_str());
+		fprintf(g_errorfp, "Pico Error Log:\n\n");
 	}
 	else
 	{
@@ -3118,10 +3118,10 @@ int main()
 	if ((status = OpenDevice(&unit)) != PICO_OK)
 	{
 		printf("%s", picoerrortoString(status, __LINE__, __func__, "OpenDevice").c_str());
-		picoerrorLog(errorfp, status, __LINE__, __func__, "OpenDevice");
-		if (errorfp != NULL)
+		picoerrorLog(g_errorfp, status, __LINE__, __func__, "OpenDevice");
+		if (g_errorfp != NULL)
 		{
-			fclose(errorfp);
+			fclose(g_errorfp);
 		}
 		return -1;
 	}
@@ -3151,9 +3151,9 @@ int main()
 		peakfilename += starttimeinfo;
 		peakfilename += ".csv";
 
-		fopen_s(&peakfp, peakfilename.c_str(), "w");
+		fopen_s(&g_peakfp, peakfilename.c_str(), "w");
 
-		if (peakfp != NULL)
+		if (g_peakfp != NULL)
 		{
 			printf("Successfully opened the peak data disk file (%s)\n", peakfilename.c_str());
 		}
@@ -3202,14 +3202,14 @@ int main()
 			{
 				printf("Issue with USB connection to device!\n");
 				printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aPingUnit").c_str());
-				picoerrorLog(errorfp, status, __LINE__, __func__, "ps2000aPingUnit");
-				if (peakfp != NULL)
+				picoerrorLog(g_errorfp, status, __LINE__, __func__, "ps2000aPingUnit");
+				if (g_peakfp != NULL)
 				{
-					fclose(peakfp); // close the peak info file
+					fclose(g_peakfp); // close the peak info file
 				}
-				if (errorfp != NULL)
+				if (g_errorfp != NULL)
 				{
-					fclose(errorfp); // close the error log file
+					fclose(g_errorfp); // close the error log file
 				}
 				qinit = _kbhitinit();
 				printf("Press the \'Q\' key to exit the program.\n");
@@ -3219,27 +3219,27 @@ int main()
 
 			// call the data collection routine
 			// if it returns an error we can just run again for another try-> don't return the error code, just print 
-			if ((status = CollectBlockTriggered(&unit, peakfp)) != PICO_OK)
+			if ((status = CollectBlockTriggered(&unit)) != PICO_OK)
 			{
 				printf("%s", picoerrortoString(status, __LINE__, __func__, "CollectBlockTriggered").c_str());
-				picoerrorLog(errorfp, status, __LINE__, __func__, "CollectBlockTriggered");
+				picoerrorLog(g_errorfp, status, __LINE__, __func__, "CollectBlockTriggered");
 			}
 		}
 
-		if (peakfp != NULL)
+		if (g_peakfp != NULL)
 		{
-			fclose(peakfp); // close the peak info file
+			fclose(g_peakfp); // close the peak info file
 		}
-		if (errorfp != NULL)
+		if (g_errorfp != NULL)
 		{
-			fclose(errorfp); // close the error log file
+			fclose(g_errorfp); // close the error log file
 		}
 	}
 	break;
 
 	case 'X': // exit
 	{
-
+		printf("Exiting.\n");
 	}
 	break;
 
