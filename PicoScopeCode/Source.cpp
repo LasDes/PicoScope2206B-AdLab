@@ -125,11 +125,9 @@ uint32_t		g_timebase = 0; // originally set to 8 by author, we'll just go with 0
 int16_t			g_oversample = 1; // not used by the two system calls that take in this variable
 BOOL			g_scaleVoltages = TRUE; // indicating for print statements whether to print values in terms of ADC counts (FALSE) or in mV (TRUE)
 BOOL     		g_ready = FALSE; // global ready flag set by the callback
-int32_t 		g_times[PS2000A_MAX_CHANNELS]; // unsure what this is used for (maybe a place to store a time offset, seems to be 0 with how we're using it)
 
 // Some global variables (mine)
 BOOL			g_firstRun = TRUE; // keep track if this is the first time the scope collects data so we can avoid some redundant prints and such
-BOOL			g_QuitFlag = FALSE; // flag used to help end data collection 
 BOOL			g_cinflag = FALSE; // flag used to keep track of cin's error status after taking in user input, FALSE (no flag raised) if ok, TRUE if error indicated by cin
 int16_t			g_qinit = -1; // initialization variable for 'Q' key state for global quit 
 int32_t			g_trigthresh; // threshold value for our initial trigger in mV
@@ -139,7 +137,7 @@ uint64_t		g_nummultipeakevents = 0; // how many multi-peak events we've recorded
 FILE* g_peakfp = NULL; // file to hold peak info, making this global so it doesn't have to be passed to every function
 FILE* g_errorfp = NULL; // file to hold error log, making this global so it doesn't have to be passed to every function
 
-// Prefixes for file names for raw waveform data and peak to peak info
+// Prefixes for file names for raw waveform data, peak to peak info, and error logging
 std::string wavefilename = "RAW_WAVEFORM_";
 std::string peakfilename = "PEAK_INFO_";
 std::string errorfilename = "ERROR_LOG_";
@@ -152,7 +150,7 @@ std::string errorfilename = "ERROR_LOG_";
 * all of them into the switch statement, but oh well it's done and it works)
 *
 * Parameters
-* - status : the PICO_STATUS to be converted to a string
+* - status : the PICO_STATUS error code to be converted to a string
 *
 * Returns
 * - std::string : contains the PICO_STATUS descriptor as a string
@@ -1739,7 +1737,7 @@ std::string PICO_STATUStoString(PICO_STATUS status)
 * Returns
 * - none
 ****************************************************************************/
-void cinReset()
+inline void cinReset()
 {
 	std::cin.clear();
 #pragma push_macro("max")
@@ -1765,7 +1763,7 @@ void cinReset()
 * Returns
 * - int16_t : indicates the initial state of the 'Q' key (toggled/ untoggled)
 ****************************************************************************/
-int16_t _kbhitinit()
+inline int16_t _kbhitinit()
 {
 	return (GetKeyState('Q') & 0x0001);
 }
@@ -1785,7 +1783,7 @@ int16_t _kbhitinit()
 * - BOOL : indicates whether the key has been toggled (hasn't been toggled
 * returns FALSE, otherwise returns TRUE)
 ****************************************************************************/
-BOOL _kbhitpoll(int16_t init)
+inline BOOL _kbhitpoll(int16_t init)
 {
 	if ((GetKeyState('Q') & 0x0001) == init)
 	{
@@ -1816,7 +1814,7 @@ BOOL _kbhitpoll(int16_t init)
 * Returns
 * - int16_t : contains the adc count converted to mV
 ****************************************************************************/
-int16_t adc_to_mv(int32_t raw, int32_t ch, UNIT* unit)
+inline int16_t adc_to_mv(int32_t raw, int32_t ch, UNIT* unit)
 {
 	return (int16_t)((raw * inputRanges[ch]) / unit->maxValue);
 }
@@ -1838,7 +1836,7 @@ int16_t adc_to_mv(int32_t raw, int32_t ch, UNIT* unit)
 * - int16_t : contains the mV converted to an equivalent ADC count under the
 * device's current settings
 ****************************************************************************/
-int16_t mv_to_adc(int16_t mv, int16_t ch, UNIT* unit)
+inline int16_t mv_to_adc(int16_t mv, int16_t ch, UNIT* unit)
 {
 	return (mv * unit->maxValue) / inputRanges[ch];
 }
@@ -1964,7 +1962,7 @@ BOOL picoerrorLog(FILE* errorlogfp, PICO_STATUS status, int linenumber, std::str
 * - int8_t* : pointer to a char stored as an int8_t (with the second letter
 * following) representing the time unit as its metric prefix
 ****************************************************************************/
-int8_t* timeUnitsToString(PS2000A_TIME_UNITS timeUnits)
+inline int8_t* timeUnitsToString(PS2000A_TIME_UNITS timeUnits)
 {
 	int8_t* timeUnitsStr = (int8_t*)"invalid time unit";
 
@@ -2022,7 +2020,7 @@ int8_t* timeUnitsToString(PS2000A_TIME_UNITS timeUnits)
 * - uint64_t : contains 1 second converted to the time unit passed in as an
 * argument
 ****************************************************************************/
-uint64_t timeUnitsToValue(PS2000A_TIME_UNITS timeUnits)
+inline uint64_t timeUnitsToValue(PS2000A_TIME_UNITS timeUnits)
 {
 	uint64_t timeUnitsVal;
 
@@ -2269,7 +2267,7 @@ void __stdcall CallBackBlock(int16_t handle, PICO_STATUS status, void* pParamete
 * Returns
 * - int16_t : contains the average of the 5 values passed as arguments
 ****************************************************************************/
-int16_t MovingAverage(int16_t a, int16_t b, int16_t c, int16_t d, int16_t e)
+inline int16_t MovingAverage(int16_t a, int16_t b, int16_t c, int16_t d, int16_t e)
 {
 	return (int16_t)((float_t)((int32_t)a + (int32_t)b + (int32_t)c + (int32_t)d + (int32_t)e) / 5.0);
 }
@@ -2598,15 +2596,14 @@ PICO_STATUS BlockDataHandler(UNIT* unit, int32_t offset, MODE mode, int16_t etsM
 					if (wavefp != NULL)
 					{
 						printf("Writing the raw data to the disk file(%s)\n...", wavefilename.c_str());
-						fprintf(wavefp, "Block Data log\n\n");
+						fprintf(wavefp, "Block Data Log:\n\n");
 						fprintf(wavefp, "Time (ns), ADC Count, mV\n");
 						for (int32_t i = 0; i < sampleCount; i++)
 						{
 							// Times printed in ns
-							// unsure of purpose of g_times, seems to always be 0 (option for timing offset?)
 							fprintf(wavefp,
 								"%d, %d, %d\n",
-								g_times[PS2000A_CHANNEL_A] + (int32_t)(i * timeIntervalNanoseconds * downsampleratio),
+								(int32_t)(i * timeIntervalNanoseconds * downsampleratio),
 								BufferInfo.driverBuffer[i],
 								adc_to_mv(BufferInfo.driverBuffer[i], unit->channelSettings[PS2000A_CHANNEL_A].range, unit));
 						}
@@ -2904,7 +2901,6 @@ PICO_STATUS get_info(UNIT* unit)
 
 	return status;
 }
-
 
 /****************************************************************************
 * OpenDevice
