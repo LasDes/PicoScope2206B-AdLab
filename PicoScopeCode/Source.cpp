@@ -2467,7 +2467,6 @@ uint32_t* BlockPeaktoPeak(UNIT* unit, int16_t buffer[], uint32_t sampleCount, ui
 	return indices;
 }
 
-
 /****************************************************************************
 * BlockDataHandler
 
@@ -2580,6 +2579,7 @@ PICO_STATUS BlockDataHandler(UNIT* unit, int32_t offset, MODE mode, int16_t etsM
 		numpeaks = indices[0]; // numpeaks stored in the first array entry
 
 		// might want to make this == 2 since 3-peak events seem to throw a wrench in the data analysis
+		// if this change is made we can get rid of the 'T' delimiter for the peak info file
 		if (numpeaks > 1) // no reason to record 1-peak events
 		{
 			g_nummultipeakevents++; // keep track of how many events we've recorded
@@ -2806,6 +2806,7 @@ PICO_STATUS CollectBlockTriggered(UNIT* unit)
 	{
 		printf("%s", picoerrortoString(status, __LINE__, __func__, "BlockDataHandler").c_str());
 		picoerrorLog(g_errorfp, status, __LINE__, __func__, "BlockDataHandler");
+		return status;
 	}
 
 	return status;
@@ -3056,7 +3057,6 @@ PICO_STATUS OpenDevice(UNIT* unit)
 ****************************************************************************/
 void CloseDevice(UNIT* unit)
 {
-	int16_t qinit = -1;
 	printf("Closing device...");
 	PICO_STATUS status = ps2000aCloseUnit(unit->handle);
 	if (status != PICO_OK)
@@ -3074,7 +3074,7 @@ void CloseDevice(UNIT* unit)
 		{
 			fclose(g_errorfp); // close the error log file
 		}
-		qinit = _kbhitinit();
+		int16_t qinit = _kbhitinit();
 		printf("Press the \'Q\' key to exit the program.\n");
 		while (!_kbhitpoll(qinit));
 		exit(99); // exit program
@@ -3157,6 +3157,10 @@ int main()
 		{
 			printf("Cannot open the file \n%s\n for writing.\n"
 				"Please ensure that you have permission to access and/ or the file isn't currently open.\n", peakfilename.c_str());
+			if (g_errorfp != NULL)
+			{
+				fclose(g_errorfp);
+			}
 			qinit = _kbhitinit();
 			printf("Press the \'Q\' key to exit the program.\n");
 			while (!_kbhitpoll(qinit));
@@ -3183,7 +3187,7 @@ int main()
 
 		printf("Selected number of multi-peak waveforms to save: %I64d\n", g_numwavestosaved);
 
-		while (!_kbhitpoll(g_qinit))
+		while (!_kbhitpoll(g_qinit)) // main data collection loop
 		{
 			// seems like using cin.clear() might mess with the key toggle states
 			// in regards to the Windows API function, resetting the init value 
