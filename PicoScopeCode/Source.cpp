@@ -3,6 +3,7 @@ Project written to collect data for a muon lifetime experiment using a picoscope
 Code is adapted from parts of example code provided on the PicoScope github page:
 https://github.com/picotech/picosdk-c-examples/blob/master/ps2000a/ps2000aCon/ps2000aCon.c
 */
+#include <stdlib.h> // malloc and some other stuff
 #include <limits> // infinity, max value of datatypes, etc.
 #include <string> // string manipulation for file naming
 #include <stdio.h> // input/output stuff
@@ -1911,8 +1912,7 @@ std::string picoerrortoString(PICO_STATUS status, int linenumber, std::string ca
 	// write the desired print statement to a string
 	sprintf_s(temp, (status) ? "[%d] %s::%s ------ %s (0x%08lx)\n" : "", linenumber, callingscope.c_str(), calledfunction.c_str(), PICO_STATUStoString(status).c_str(), status);
 
-	// conversion between array of chars to explicit std::string
-	std::string statement = temp;
+	std::string statement = temp; // conversion between array of chars to explicit std::string
 	return statement;
 }
 
@@ -2081,7 +2081,7 @@ PICO_STATUS ClearDataBuffers(UNIT* unit)
 
 	for (int16_t i = 0; i < unit->channelCount; i++)
 	{
-		// for each channel, set a NULL pointer to the location of the buffer, set buffer size to 0, and segment index to 0
+		// for each channel, set a NULL pointer to the location of the buffer, buffer size to 0, and segment index to 0
 		if ((status = ps2000aSetDataBuffer(unit->handle, (PS2000A_CHANNEL)(i), NULL, 0, 0, PS2000A_RATIO_MODE_NONE)) != PICO_OK)
 		{
 			printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aSetDataBuffer").c_str());
@@ -2345,23 +2345,52 @@ uint32_t* BlockPeakFinding(int16_t buffer[], uint32_t sampleCount, UNIT* unit)
 	int16_t* smoothbuffer = NULL;
 	smoothbuffer = (int16_t*)malloc(sampleCount * sizeof(int16_t));
 	/*
-	* TRYING TO ALLOCATE SMOOTHBUFFER WITH FLOATS
-	* CAUSES THE OS TO NOT GIVE YOU ALL THE MEMORY (I think)
-	* YOU ASKED FOR, BUT IT DOESN'T TELL YOU THAT HAPPENED
-	* SO WHEN YOU TRY TO FREE IT THE PROGRAM BREAKS BECAUSE
-	* YOU'RE TRYING TO FREE MEMORY YOU NEVER HAD ACCESS TO
+	* Quick note here:
+	*	Initially tried making smoothbuffer of type float32_t or just float to avoid
+	*	some of the truncation that would come with the averaging, but doing this
+	*	caused all kinds of memory exceptions down the line, think it might have
+	*	something to do with not getting all the memory we asked for and then trying
+	*	to free it? Not sure sure, but the program works just fine using int16_t's
+	*	here so it's not really an issue.
 	*/
-	// this comment brought to you by a Frustrating Afternoon™
-	// various ways of trying to allocate float array (ignore)
-	// float_t* smoothbuffer; 
-	// smoothbuffer = (float_t*)malloc(sampleCount * sizeof(float_t));
-	// float_t* smoothbuffer = new float_t(sampleCount * sizeof(float_t));
-	// std::vector<float_t> smoothbuffer(sampleCount);
 	int16_t peakValue = std::numeric_limits<int16_t>::infinity();
 	int32_t peakIndex = -1;
 	float_t baseline;
 	// g_peakthresh needed to filter out some of the noise, a bit of a duct tape solution but it works
 	int16_t thresh = mv_to_adc(g_peakthresh, unit->channelSettings[PS2000A_CHANNEL_A].range, unit);
+
+	// in the unlikely event we didn't get the memory we asked for...
+	if (smoothbuffer == NULL) // can't go through the peak detection alg without the smoothbuffer
+	{
+		printf("Failed to allocate the necessary memory for the peak-detection algorithm.(BlockPeakFinding)\n");
+		printf("Requested %zu bytes. (smoothbuffer)\n", (size_t)sampleCount * sizeof(int16_t));
+		printf("The program will throw away this run and continue to collect more data.\n");
+		if (g_errorfp != NULL)
+		{
+			fprintf(g_errorfp, "%s\n[%d] %s::%s ------ MEMORY ALLOCATION ERROR (non-pico)\n\n", timeInfotoString().c_str(), __LINE__, __func__, "malloc");
+		}
+		if (indices != NULL)
+		{
+			free(indices);
+		}
+		return (uint32_t*)NULL;
+	}
+	if (indices == NULL) // no reason to look for peaks if we can't pass along the information...
+	{
+		printf("Failed to allocate the necessary memory for the peak-detection algorithm.(BlockPeakFinding)\n");
+		printf("Requested %zu bytes.(indices)\n", (size_t)10 * sizeof(uint32_t));
+		printf("The program will throw away this run and continue to collect more data.\n");
+		if (g_errorfp != NULL)
+		{
+			fprintf(g_errorfp, "%s\n[%d] %s::%s ------ MEMORY ALLOCATION ERROR (non-pico)\n\n", timeInfotoString().c_str(), __LINE__, __func__, "malloc");
+		}
+		if (smoothbuffer != NULL)
+		{
+			free(smoothbuffer);
+		}
+		return (uint32_t*)NULL;
+	}
+	// ...otherwise we're good :)
 
 	// just copy the ends in since we can't average on both sides of them
 	smoothbuffer[0] = buffer[0];
@@ -2418,11 +2447,12 @@ uint32_t* BlockPeakFinding(int16_t buffer[], uint32_t sampleCount, UNIT* unit)
 
 /****************************************************************************
 * BlockPeaktoPeak
-
+*
 * - Calls BlockPeakFinding to find peaks in a block of data, then finds
 * the peak to peak times for the returned peaks
 * - Assumes a downwards peak characteristic of the scintillating bar
-
+* - If speed is a concern this function could be eliminated and
+* BlockPeakFinding could return the indices array directly to BlockDataHandler
 * Parameters
 * - buffer : the buffer array where the data is stored
 * - sampleCount : the number of samples in the buffer
@@ -2439,6 +2469,15 @@ uint32_t* BlockPeaktoPeak(UNIT* unit, int16_t buffer[], uint32_t sampleCount, ui
 	uint16_t numpeaks = 0;
 
 	indices = BlockPeakFinding(buffer, sampleCount, unit); // get the results from the peak finding algorithm
+	if (indices == NULL) // if the peak detection algorithm had allocation issues...
+	{
+		printf("Error allocating memory, no peaks could be detected.\n");
+		if (g_errorfp != NULL)
+		{
+			fprintf(g_errorfp, "%s\n[%d] %s::%s ------ MEMORY ALLOCATION ERROR (non-pico)\n\n", timeInfotoString().c_str(), __LINE__, __func__, "BlockPeakFinding");
+		}
+		return (uint32_t*)NULL;
+	}
 	numpeaks = indices[0]; // first entry is numpeaks
 
 	printf(numpeaks > 1 ? "Calculating peak to peak values...\n" : "");
@@ -2469,18 +2508,18 @@ uint32_t* BlockPeaktoPeak(UNIT* unit, int16_t buffer[], uint32_t sampleCount, ui
 
 /****************************************************************************
 * BlockDataHandler
-
+*
 * - Used by all block data routines
 * - acquires data (user sets trigger mode before calling),
 *   and saves all to a .csv file (if specified by numwavestosaved)
-
+*
 * Parameters
 * - unit : pointer to the UNIT structure, where the handle is stored
 * - feakfp : pointer to the file where peak info (not waveforms) are written to
 * - offset : the offset into the data buffer to start the display's slice. (normally 0)
 * - mode : ANALOGUE, DIGITAL, AGGREGATED, MIXED - just used ANALOGUE here
 * - etsModeSet: whether or not ETS Mode (see programmer's guide) is
-	turned on (turned off for our application)
+*	turned on (turned off for our application)
 *
 * Returns
 * - PICO_STATUS : to indicate success, or if an error occurred
@@ -2488,14 +2527,10 @@ uint32_t* BlockPeaktoPeak(UNIT* unit, int16_t buffer[], uint32_t sampleCount, ui
 PICO_STATUS BlockDataHandler(UNIT* unit, int32_t offset, MODE mode, int16_t etsModeSet)
 {
 	PICO_STATUS status = PICO_OK;
+	int32_t timeIntervalNanoseconds, posttriggersampleCount, pretriggersampleCount, sampleCount, maxSamples;
 	uint32_t segmentIndex = 0;
-	int32_t timeIntervalNanoseconds;
-	int32_t posttriggersampleCount = 0;
-	int32_t sampleCount = 0;
-	int32_t pretriggersampleCount = 0;
-	int32_t maxSamples = 0;
 	uint32_t downsampleratio = 1;
-	uint16_t numpeaks = 0;
+	uint16_t numpeaks;
 	uint32_t* indices = NULL; // array to hold numpeaks and the indices of such peaks
 	BOOL lasttosave = FALSE; // indicates if the waveform just saved was the last one to be saved
 	FILE* wavefp = NULL;
@@ -2530,21 +2565,28 @@ PICO_STATUS BlockDataHandler(UNIT* unit, int32_t offset, MODE mode, int16_t etsM
 		printf("Setting posttriggersampleCount to %d - 1000, and pretriggersampleCount to 1000.\n", maxSamples);
 	}
 
-	if (mode == ANALOGUE)
+	BufferInfo.driverBuffer = (int16_t*)malloc(sampleCount * sizeof(int16_t));
+	if ((status = ps2000aSetDataBuffer(unit->handle, PS2000A_CHANNEL_A, BufferInfo.driverBuffer, sampleCount, segmentIndex, ratioMode)) != PICO_OK)
 	{
-		BufferInfo.driverBuffer = (int16_t*)malloc(sampleCount * sizeof(int16_t));
-		if ((status = ps2000aSetDataBuffer(unit->handle, PS2000A_CHANNEL_A, BufferInfo.driverBuffer, sampleCount, segmentIndex, ratioMode)) != PICO_OK)
-		{
-			printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aSetDataBuffer").c_str());
-			picoerrorLog(g_errorfp, status, __LINE__, __func__, "ps2000aSetDataBuffer");
-			return status;
-		}
+		// any allocation errors will (hopefully) get caught by the pico library function
+		printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aSetDataBuffer").c_str());
+		picoerrorLog(g_errorfp, status, __LINE__, __func__, "ps2000aSetDataBuffer");
+		return status;
 	}
 
 	// Validate the current timebase index, and find the maximum number of samples and the time interval (in nanoseconds)
 	while ((status = ps2000aGetTimebase(unit->handle, g_timebase, sampleCount, &timeIntervalNanoseconds, g_oversample, &maxSamples, 0)) != PICO_OK)
 	{
-		g_timebase++; // this should never get incremented and just stay at 0 (so long as we're using single channel block mode)
+		if (status == PICO_INVALID_TIMEBASE) // not an actual error, just need to try a different time base
+		{
+			g_timebase++; // we shouldn't reach this spot, this should just stay at 0 (so long as we're using single channel block mode)
+		}
+		else // something actually went wrong
+		{
+			printf("%s", picoerrortoString(status, __LINE__, __func__, "ps2000aGetTimebase").c_str());
+			picoerrorLog(g_errorfp, status, __LINE__, __func__, "ps2000aGetTimebase");
+			return status;
+		}
 	}
 
 	// Start it collecting, then wait for completion
@@ -2576,79 +2618,84 @@ PICO_STATUS BlockDataHandler(UNIT* unit, int32_t offset, MODE mode, int16_t etsM
 		}
 
 		indices = BlockPeaktoPeak(unit, BufferInfo.driverBuffer, sampleCount, timeIntervalNanoseconds, downsampleratio);
+		if (indices == NULL) // if there were memory allocation issues with the peak detection algorithm...
+		{
+			if (g_errorfp != NULL)
+			{
+				fprintf(g_errorfp, "%s\n[%d] %s::%s ------ MEMORY ALLOCATION ERROR (non-pico)\n\n", timeInfotoString().c_str(), __LINE__, __func__, "BlockPeaktoPeak");
+			}
+			return status;
+		}
 		numpeaks = indices[0]; // numpeaks stored in the first array entry
 
-		// might want to make this == 2 since 3-peak events seem to throw a wrench in the data analysis
-		// if this change is made we can get rid of the 'T' delimiter for the peak info file
+		// might want to make this "== 2" since 3-peak events seem to throw a wrench in the data analysis
+		// if this change is made we can get rid of the 'T' delimiter for the peak info file and add column headers
 		if (numpeaks > 1) // no reason to record 1-peak events
 		{
 			g_nummultipeakevents++; // keep track of how many events we've recorded
-			if (mode == ANALOGUE)	// if we're using analogue mode
+			if (((g_numwavestosaved > 0) || (g_numwavestosaved == -1))) // if we're still saving waveforms
 			{
-				if (((g_numwavestosaved > 0) || (g_numwavestosaved == -1))) // if we're still saving waveforms
-				{
-					// give the file a time-dependent name to avoid file name collisions
-					wavefilename = "RAW_WAVEFORM_"; // reset the filename from the last block of multi-peak data
-					wavefilename += timeInfotoString();
-					wavefilename += ".csv";
-					fopen_s(&wavefp, wavefilename.c_str(), "w");
+				// give the file a time-dependent name to avoid file name collisions
+				wavefilename = "RAW_WAVEFORM_"; // reset the filename from the last block of multi-peak data
+				wavefilename += timeInfotoString();
+				wavefilename += ".csv";
+				fopen_s(&wavefp, wavefilename.c_str(), "w");
 
-					if (wavefp != NULL)
-					{
-						printf("Writing the raw data to the disk file(%s)\n...", wavefilename.c_str());
-						fprintf(wavefp, "Block Data Log:\n\n");
-						fprintf(wavefp, "Time (ns), ADC Count, mV\n");
-						for (int32_t i = 0; i < sampleCount; i++)
-						{
-							// Times printed in ns
-							fprintf(wavefp,
-								"%d, %d, %d\n",
-								(int32_t)(i * timeIntervalNanoseconds * downsampleratio),
-								BufferInfo.driverBuffer[i],
-								adc_to_mv(BufferInfo.driverBuffer[i], unit->channelSettings[PS2000A_CHANNEL_A].range, unit));
-						}
-						printf("done.\n");
-						// update the number of waveforms to be saved
-						if (g_numwavestosaved > 0)
-						{
-							g_numwavestosaved--;
-							lasttosave = g_numwavestosaved ? FALSE : TRUE; // If we just saved the last waveform, set this flag to TRUE
-						}
-					}
-					else
-					{
-						printf("Cannot open the file \n%s\n for writing.\n"
-							"Please ensure that you have permission to access and/ or the file isn't currently open.\n", wavefilename.c_str());
-					}
-				}
-				else
+				if (wavefp != NULL)
 				{
-					printf("The maximum number of waveforms to be recorded has been reached.\n");
-					printf("Peak information for this waveform will still be saved. (%s)\n", peakfilename.c_str());
-				}
-				if (g_peakfp != NULL)
-				{
-					// print peak depths both as adc counts and in mV
-					for (uint16_t i = 1; i <= numpeaks; i++)
+					printf("Writing the raw data to the disk file(%s)\n...", wavefilename.c_str());
+					fprintf(wavefp, "Block Data Log:\n\nTime (ns), ADC Count, mV\n");
+
+					for (int32_t i = 0; i < sampleCount; i++)
 					{
-						fprintf(g_peakfp, "%d,%d,",
-							BufferInfo.driverBuffer[indices[i]],
-							adc_to_mv(BufferInfo.driverBuffer[indices[i]], unit->channelSettings[PS2000A_CHANNEL_A].range, unit));
+						// Times printed in ns
+						fprintf(wavefp,
+							"%d, %d, %d\n",
+							(int32_t)(i * timeIntervalNanoseconds * downsampleratio),
+							BufferInfo.driverBuffer[i],
+							adc_to_mv(BufferInfo.driverBuffer[i], unit->channelSettings[PS2000A_CHANNEL_A].range, unit));
 					}
-					fprintf(g_peakfp, "T,"); // some arbitrary deliminating character to separate peak depths and time differences
-					// print time differences (in ns) between the first peak and other peaks
-					for (uint16_t i = 2; i <= numpeaks; i++)
+					printf("done.\n");
+					// update the number of waveforms to be saved
+					if (g_numwavestosaved > 0)
 					{
-						fprintf(g_peakfp, "%d,", (indices[i] - indices[1]) * timeIntervalNanoseconds * downsampleratio);
+						g_numwavestosaved--;
+						lasttosave = g_numwavestosaved ? FALSE : TRUE; // If we just saved the last waveform to be saved, set this flag to TRUE
 					}
-					// if the program wrote a waveform file, its name gets written to the peak file
-					fprintf(g_peakfp, (g_numwavestosaved || lasttosave) ? "%s\n" : "No file\n", wavefilename.c_str());
 				}
 				else
 				{
 					printf("Cannot open the file \n%s\n for writing.\n"
-						"Please ensure that you have permission to access and/ or the file isn't currently open.\n", peakfilename.c_str());
+						"Please ensure that you have permission to access and/ or the file isn't currently open.\n", wavefilename.c_str());
 				}
+			}
+			else
+			{
+				printf("The maximum number of waveforms to be recorded has been reached.\n");
+				printf("Peak information for this waveform will still be saved. (%s)\n", peakfilename.c_str());
+			}
+			if (g_peakfp != NULL)
+			{
+				// print peak depths both as adc counts and in mV
+				for (uint16_t i = 1; i <= numpeaks; i++)
+				{
+					fprintf(g_peakfp, "%d,%d,",
+						BufferInfo.driverBuffer[indices[i]],
+						adc_to_mv(BufferInfo.driverBuffer[indices[i]], unit->channelSettings[PS2000A_CHANNEL_A].range, unit));
+				}
+				fprintf(g_peakfp, "T,"); // some arbitrary deliminating character to separate peak depths and time differences
+				// print time differences (in ns) between the first peak and other peaks
+				for (uint16_t i = 2; i <= numpeaks; i++)
+				{
+					fprintf(g_peakfp, "%d,", (indices[i] - indices[1]) * timeIntervalNanoseconds * downsampleratio);
+				}
+				// if the program wrote a waveform file, its name gets written to the peak file
+				fprintf(g_peakfp, (g_numwavestosaved || lasttosave) ? "%s\n" : "No file\n", wavefilename.c_str());
+			}
+			else
+			{
+				printf("Cannot open the file \n%s\n for writing.\n"
+					"Please ensure that you have permission to access and/ or the file isn't currently open.\n", peakfilename.c_str());
 			}
 		}
 		else
@@ -2675,12 +2722,9 @@ PICO_STATUS BlockDataHandler(UNIT* unit, int32_t offset, MODE mode, int16_t etsM
 	}
 
 	// Free up the buffer if we allocated it
-	if (mode == ANALOGUE)
+	if (unit->channelSettings[PS2000A_CHANNEL_A].enabled && BufferInfo.driverBuffer != NULL)
 	{
-		if (unit->channelSettings[PS2000A_CHANNEL_A].enabled && BufferInfo.driverBuffer != NULL)
-		{
-			free(BufferInfo.driverBuffer);
-		}
+		free(BufferInfo.driverBuffer);
 	}
 
 	if (indices != NULL)
@@ -2815,7 +2859,7 @@ PICO_STATUS CollectBlockTriggered(UNIT* unit)
 /****************************************************************************
 * get_info
 *
-* Initialise unit' structure with variant specific defaults
+* Initialize unit structure with variant specific defaults/ info
 
 * Parameters
 * - unit : pointer to the UNIT structure, where the handle is stored
@@ -2914,10 +2958,9 @@ PICO_STATUS get_info(UNIT* unit)
 ***************************************************************************/
 PICO_STATUS OpenDevice(UNIT* unit)
 {
-	int16_t maxvalue = 0;
+	int16_t maxvalue;
 	PWQ pulseWidth;
 	TRIGGER_DIRECTIONS directions;
-	int16_t qinit = -1;
 	int16_t rangeselect; // range selected in mV
 	PS2000A_RANGE scoperange = PS2000A_2V; // scope range, typically want PS2000A_2V for this application
 	PICO_STATUS status = PICO_OK;
@@ -3077,7 +3120,7 @@ void CloseDevice(UNIT* unit)
 		int16_t qinit = _kbhitinit();
 		printf("Press the \'Q\' key to exit the program.\n");
 		while (!_kbhitpoll(qinit));
-		exit(99); // exit program
+		exit(EXIT_FAILURE); // exit program
 	}
 	printf("done.\n");
 }
@@ -3089,7 +3132,7 @@ int main()
 	char ch; // program selection choice
 	g_qinit = _kbhitinit(); // Initialize state of Q key so that we can quit later on in the program (global)
 	int16_t qinit; // Initialize state of Q key so that we can quit later on in the program (for connection checks between runs)
-	std::string starttimeinfo;
+	std::string starttimeinfo; // holds time info for file naming purposes
 
 	// give the error log file a unique (time dependent) name so we don't overwrite anything
 	starttimeinfo = timeInfotoString();
