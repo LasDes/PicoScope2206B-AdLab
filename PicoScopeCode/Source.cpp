@@ -130,7 +130,7 @@ BOOL     		g_ready = FALSE; // global ready flag set by the callback
 // Some global variables (mine)
 BOOL			g_firstRun = TRUE; // keep track if this is the first time the scope collects data so we can avoid some redundant prints and such
 BOOL			g_cinflag = FALSE; // flag used to keep track of cin's error status after taking in user input, FALSE (no flag raised) if ok, TRUE if error indicated by cin
-int16_t			g_qinit = -1; // initialization variable for 'Q' key state for global quit 
+SHORT			g_qinit = -1; // initialization variable for 'Q' key state for global quit, using the SHORT type because that's what the microsoft api function returns for the key state
 int32_t			g_trigthresh; // threshold value for our initial trigger in mV
 int32_t			g_peakthresh; // threshold for our peak finding alg in mV
 int64_t			g_numwavestosaved = 0; // number of waveforms to save in a given session, might want to rename
@@ -1764,9 +1764,9 @@ inline void cinReset()
 * Returns
 * - int16_t : indicates the initial state of the 'Q' key (toggled/ untoggled)
 ****************************************************************************/
-inline int16_t _kbhitinit()
+inline SHORT _kbhitinit()
 {
-	return (GetKeyState('Q') & 0x0001);
+	return (GetAsyncKeyState('Q') & (SHORT)0x0001);
 }
 
 /****************************************************************************
@@ -1779,14 +1779,15 @@ inline int16_t _kbhitinit()
 *
 * Parameters
 * - init : the initial value of the key's toggle state
+*		- 1 for toggled, 0 for untoggled
 *
 * Returns
 * - BOOL : indicates whether the key has been toggled (hasn't been toggled
 * returns FALSE, otherwise returns TRUE)
 ****************************************************************************/
-inline BOOL _kbhitpoll(int16_t init)
+inline BOOL _kbhitpoll(SHORT init)
 {
-	if ((GetKeyState('Q') & 0x0001) == init)
+	if ((GetAsyncKeyState('Q') & (SHORT)0x0001) == (SHORT)init)
 	{
 		return FALSE;
 	}
@@ -2077,7 +2078,7 @@ inline uint64_t timeUnitsToValue(PS2000A_TIME_UNITS timeUnits)
 ****************************************************************************/
 PICO_STATUS ClearDataBuffers(UNIT* unit)
 {
-	PICO_STATUS status = PICO_OK;
+	PICO_STATUS status;
 
 	for (int16_t i = 0; i < unit->channelCount; i++)
 	{
@@ -2477,7 +2478,7 @@ uint32_t* BlockPeaktoPeak(UNIT* unit, int16_t buffer[], uint32_t sampleCount, ui
 			fprintf(g_errorfp, "%s\n[%d] %s::%s ------ MEMORY ALLOCATION ERROR (non-pico)\n\n", timeInfotoString().c_str(), __LINE__, __func__, "BlockPeakFinding");
 		}
 		return (uint32_t*)NULL;
-	}
+	} // ...otherwise we're fine to proceed
 	numpeaks = indices[0]; // first entry is numpeaks
 
 	printf(numpeaks > 1 ? "Calculating peak to peak values...\n" : "");
@@ -2534,7 +2535,7 @@ PICO_STATUS BlockDataHandler(UNIT* unit, int32_t offset, MODE mode, int16_t etsM
 	uint32_t* indices = NULL; // array to hold numpeaks and the indices of such peaks
 	BOOL lasttosave = FALSE; // indicates if the waveform just saved was the last one to be saved
 	FILE* wavefp = NULL;
-	int16_t qinit = -1; // stores 'Q' key toggle state for quitting
+	SHORT qinit; // stores 'Q' key toggle state for quitting
 	PS2000A_RATIO_MODE ratioMode = PS2000A_RATIO_MODE_NONE; // Don't want any downsampling
 	int16_t* buffer = NULL; // buffer where the device will dump its block of data to
 	tBufferInfo BufferInfo = {
@@ -2598,11 +2599,9 @@ PICO_STATUS BlockDataHandler(UNIT* unit, int32_t offset, MODE mode, int16_t etsM
 		return status;
 	}
 
-	printf("Waiting for trigger...Press \'Q\' to abort...");
+	printf("Waiting for trigger...Press \'Q\' to abort following the trigger...");
 
-	qinit = _kbhitinit();
-
-	while (!g_ready && !_kbhitpoll(qinit))
+	while (!g_ready)
 	{
 		Sleep(0);
 	}
@@ -2616,7 +2615,7 @@ PICO_STATUS BlockDataHandler(UNIT* unit, int32_t offset, MODE mode, int16_t etsM
 			picoerrorLog(g_errorfp, status, __LINE__, __func__, "ps2000aGetValues");
 			return status;
 		}
-		
+
 		indices = BlockPeaktoPeak(unit, BufferInfo.driverBuffer, sampleCount, timeIntervalNanoseconds, downsampleratio);
 		if (indices == NULL) // if there were memory allocation issues with the peak detection algorithm...
 		{
@@ -2625,7 +2624,7 @@ PICO_STATUS BlockDataHandler(UNIT* unit, int32_t offset, MODE mode, int16_t etsM
 				fprintf(g_errorfp, "%s\n[%d] %s::%s ------ MEMORY ALLOCATION ERROR (non-pico)\n\n", timeInfotoString().c_str(), __LINE__, __func__, "BlockPeaktoPeak");
 			}
 			return status;
-		}
+		} // ...otherwise we're good to go
 		numpeaks = indices[0]; // numpeaks stored in the first array entry
 
 		// might want to make this "== 2" since 3-peak events seem to throw a wrench in the data analysis
@@ -2704,11 +2703,6 @@ PICO_STATUS BlockDataHandler(UNIT* unit, int32_t offset, MODE mode, int16_t etsM
 			printf((g_numwavestosaved == -1) ? "" : "Remaining Number of Waveforms to Record: %d\n", g_numwavestosaved);
 		}
 	}
-	else
-	{
-		printf("Data collection aborted!\nPress a key to finish terminating the program.\n");
-		_getch();
-	}
 
 	if ((status = ps2000aStop(unit->handle)) != PICO_OK)
 	{
@@ -2718,10 +2712,10 @@ PICO_STATUS BlockDataHandler(UNIT* unit, int32_t offset, MODE mode, int16_t etsM
 
 	if (wavefp != NULL)
 	{
-		fclose(wavefp); // If we wrote waveform data to a file, close it
+		fclose(wavefp); // if we wrote waveform data to a file, close it
 	}
 
-	// Free up the buffer if we allocated it
+	// free up the buffer if we allocated it
 	if (unit->channelSettings[PS2000A_CHANNEL_A].enabled && BufferInfo.driverBuffer != NULL)
 	{
 		free(BufferInfo.driverBuffer);
@@ -3018,9 +3012,11 @@ PICO_STATUS OpenDevice(UNIT* unit)
 		printf("Range: ");
 
 		std::cin >> rangeselect; // take in index
-		// offset needed because the first range supported by our device 
-		// isn't the first range in input ranges data type, which lists all
-		// supported ranges by all picoscope devices 
+		/*
+		* offset needed because the first range supported by our device
+		* isn't the first range in input ranges data type, which lists all
+		* supported ranges by all picoscope devices
+		*/
 		rangeselect += unit->firstRange;
 		scoperange = (PS2000A_RANGE)inputRanges[rangeselect];
 		g_cinflag = (std::cin.bad() || std::cin.fail()) ? TRUE : FALSE; // check if cin's error flags were set
@@ -3068,8 +3064,8 @@ PICO_STATUS OpenDevice(UNIT* unit)
 	}
 
 	// seems like we don't use these structs but they need to be passed as args still
-	memset(&directions, 0, sizeof(TRIGGER_DIRECTIONS)); // set all the memory allocated for the struct to 0
-	memset(&pulseWidth, 0, sizeof(PWQ)); // set all the memory allocated for the struct to 0
+	memset(&directions, 0, sizeof(TRIGGER_DIRECTIONS));
+	memset(&pulseWidth, 0, sizeof(PWQ));
 
 	if ((status = SetDefaults(unit)) != PICO_OK)
 	{
@@ -3117,7 +3113,7 @@ void CloseDevice(UNIT* unit)
 		{
 			fclose(g_errorfp); // close the error log file
 		}
-		int16_t qinit = _kbhitinit();
+		SHORT qinit = _kbhitinit();
 		printf("Press the \'Q\' key to exit the program.\n");
 		while (!_kbhitpoll(qinit));
 		exit(EXIT_FAILURE); // exit program
@@ -3130,9 +3126,10 @@ int main()
 	PICO_STATUS status; // to receive PICO_OK (success) or other various error codes from various function calls
 	UNIT unit; // the UNIT structure, where the handle will be stored
 	char ch; // program selection choice
-	g_qinit = _kbhitinit(); // Initialize state of Q key so that we can quit later on in the program (global)
-	int16_t qinit; // Initialize state of Q key so that we can quit later on in the program (for connection checks between runs)
+	SHORT qinit; // Initialize state of Q key so that we can quit later on in the program (for connection checks between runs)
 	std::string starttimeinfo; // holds time info for file naming purposes
+
+	g_qinit = _kbhitinit(); // Initialize state of Q key so that we can quit later on in the program (global)
 
 	// give the error log file a unique (time dependent) name so we don't overwrite anything
 	starttimeinfo = timeInfotoString();
@@ -3172,12 +3169,19 @@ int main()
 		return 0;
 	}
 
-	// display choices
-	printf("\n");
-	printf("B - Triggered block                          X - Exit\n\n");
-	printf("Operation:");
+	std::cin.clear();
+	do
+	{
+		// display choices
+		printf("\n");
+		printf("B - Triggered block                          X - Exit\n\n");
+		printf("Operation:");
 
-	ch = toupper(_getch()); // get the user's choice
+		std::cin >> ch; // get the user's choice
+		ch = toupper(ch);
+		g_cinflag = (std::cin.bad() || std::cin.fail()) ? TRUE : FALSE; // check if cin's error flags were set
+		cinReset(); // flush the input buffer for future inputs
+	} while (g_cinflag);
 
 	printf("\n\n");
 
@@ -3230,16 +3234,9 @@ int main()
 
 		printf("Selected number of multi-peak waveforms to save: %I64d\n", g_numwavestosaved);
 
+		g_qinit = _kbhitinit(); // can't hurt to reset this
 		while (!_kbhitpoll(g_qinit)) // main data collection loop
 		{
-			// seems like using cin.clear() might mess with the key toggle states
-			// in regards to the Windows API function, resetting the init value 
-			// seems to take care of the problem
-			if (g_firstRun == FALSE)
-			{
-				g_qinit = _kbhitinit();
-			}
-
 			// make sure the device is still connected
 			if ((status = ps2000aPingUnit(unit.handle)) != PICO_OK)
 			{
