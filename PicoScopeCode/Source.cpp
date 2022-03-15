@@ -2616,7 +2616,7 @@ PICO_STATUS BlockDataHandler(UNIT* unit, int32_t offset, MODE mode, int16_t etsM
 			picoerrorLog(g_errorfp, status, __LINE__, __func__, "ps2000aGetValues");
 			return status;
 		}
-		// test
+		
 		indices = BlockPeaktoPeak(unit, BufferInfo.driverBuffer, sampleCount, timeIntervalNanoseconds, downsampleratio);
 		if (indices == NULL) // if there were memory allocation issues with the peak detection algorithm...
 		{
