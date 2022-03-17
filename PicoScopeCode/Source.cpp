@@ -137,6 +137,7 @@ int64_t			g_numwavestosaved = 0; // number of waveforms to save in a given sessi
 uint64_t		g_nummultipeakevents = 0; // how many multi-peak events we've recorded so far (just peak info)
 FILE* g_peakfp = NULL; // file to hold peak info, making this global so it doesn't have to be passed to every function
 FILE* g_errorfp = NULL; // file to hold error log, making this global so it doesn't have to be passed to every function
+tBufferInfo		g_BufferInfo; // holds info about the buffer
 
 // Prefixes for file names for raw waveform data, peak to peak info, and error logging
 std::string wavefilename = "RAW_WAVEFORM_";
@@ -2530,62 +2531,60 @@ uint32_t* BlockPeaktoPeak(UNIT* unit, int16_t buffer[], uint32_t sampleCount, ui
 PICO_STATUS BlockDataHandler(UNIT* unit, int32_t offset, MODE mode, int16_t etsModeSet)
 {
 	PICO_STATUS status = PICO_OK;
-	int32_t timeIntervalNanoseconds, posttriggersampleCount, pretriggersampleCount, sampleCount, maxSamples;
+	static int32_t timeIntervalNanoseconds, posttriggersampleCount, pretriggersampleCount, sampleCount, maxSamples; // vars get set on first call to function, retain value for subsequent runs because static
 	uint32_t segmentIndex = 0;
 	uint32_t downsampleratio = 1;
 	uint16_t numpeaks;
 	uint32_t* indices = NULL; // array to hold numpeaks and the indices of such peaks
 	BOOL lasttosave = FALSE; // indicates if the waveform just saved was the last one to be saved
 	FILE* wavefp = NULL;
-	SHORT qinit; // stores 'Q' key toggle state for quitting
 	PS2000A_RATIO_MODE ratioMode = PS2000A_RATIO_MODE_NONE; // Don't want any downsampling
-	int16_t* buffer = NULL; // buffer where the device will dump its block of data to
-	tBufferInfo BufferInfo = {
-		unit,
-		mode,
-		buffer
-	};
 
-
-	if ((status = ps2000aMemorySegments(unit->handle, (uint32_t)1, &maxSamples)) != PICO_OK)
+	if (g_firstRun == TRUE) // only need to set this stuff up once
 	{
-		picoerrorLog(g_errorfp, status, __LINE__, __func__, "ps2000aMemorySegments");
-		return status;
-	}
-
-	// Max sample count for the device is 33,554,342
-	pretriggersampleCount = 100;
-	posttriggersampleCount = 50000;
-	sampleCount = pretriggersampleCount + posttriggersampleCount;
-	if (sampleCount > maxSamples)
-	{
-		sampleCount = maxSamples;
-		pretriggersampleCount = 1000;
-		posttriggersampleCount = maxSamples - 1000;
-		printf("Requested sampleCount exceeds the device's internal memory.\n");
-		printf("Setting posttriggersampleCount to %d - 1000, and pretriggersampleCount to 1000.\n", maxSamples);
-	}
-
-	BufferInfo.driverBuffer = (int16_t*)malloc(sampleCount * sizeof(int16_t));
-	if ((status = ps2000aSetDataBuffer(unit->handle, PS2000A_CHANNEL_A, BufferInfo.driverBuffer, sampleCount, segmentIndex, ratioMode)) != PICO_OK)
-	{
-		// any allocation errors regarding BufferInfo.driverBuffer will (hopefully) get caught by the pico library function
-		picoerrorLog(g_errorfp, status, __LINE__, __func__, "ps2000aSetDataBuffer");
-		return status;
-	}
-
-	// Validate the current timebase index, and find the maximum number of samples and the time interval (in nanoseconds)
-	while ((status = ps2000aGetTimebase(unit->handle, g_timebase, sampleCount, &timeIntervalNanoseconds, g_oversample, &maxSamples, 0)) != PICO_OK)
-	{
-		if (status == PICO_INVALID_TIMEBASE) // not an actual error, just need to try a different time base
+		if ((status = ps2000aMemorySegments(unit->handle, (uint32_t)1, &maxSamples)) != PICO_OK)
 		{
-			g_timebase++; // we shouldn't reach this spot, this should just stay at 0 (so long as we're using single channel block mode)
-		}
-		else // something actually went wrong
-		{
-			picoerrorLog(g_errorfp, status, __LINE__, __func__, "ps2000aGetTimebase");
+			picoerrorLog(g_errorfp, status, __LINE__, __func__, "ps2000aMemorySegments");
 			return status;
 		}
+
+		// Max sample count for the device is 33,554,342
+		pretriggersampleCount = 100;
+		posttriggersampleCount = 50000;
+		sampleCount = pretriggersampleCount + posttriggersampleCount;
+		if (sampleCount > maxSamples)
+		{
+			sampleCount = maxSamples;
+			pretriggersampleCount = 1000;
+			posttriggersampleCount = maxSamples - 1000;
+			printf("Requested sampleCount exceeds the device's internal memory.\n");
+			printf("Setting posttriggersampleCount to %d - 1000, and pretriggersampleCount to 1000.\n", maxSamples);
+		}
+
+		g_BufferInfo.mode = mode;
+		g_BufferInfo.unit = unit;
+		g_BufferInfo.driverBuffer = (int16_t*)malloc(sampleCount * sizeof(int16_t));
+		if ((status = ps2000aSetDataBuffer(unit->handle, PS2000A_CHANNEL_A, g_BufferInfo.driverBuffer, sampleCount, segmentIndex, ratioMode)) != PICO_OK)
+		{
+			// any allocation errors regarding BufferInfo.driverBuffer will (hopefully) get caught by the pico library function
+			picoerrorLog(g_errorfp, status, __LINE__, __func__, "ps2000aSetDataBuffer");
+			return status;
+		}
+
+		// Validate the current timebase index, and find the maximum number of samples and the time interval (in nanoseconds)
+		while ((status = ps2000aGetTimebase(unit->handle, g_timebase, sampleCount, &timeIntervalNanoseconds, g_oversample, &maxSamples, 0)) != PICO_OK)
+		{
+			if (status == PICO_INVALID_TIMEBASE) // not an actual error, just need to try a different time base
+			{
+				g_timebase++; // we shouldn't reach this spot, this should just stay at 0 (so long as we're using single channel block mode)
+			}
+			else // something actually went wrong
+			{
+				picoerrorLog(g_errorfp, status, __LINE__, __func__, "ps2000aGetTimebase");
+				return status;
+			}
+		}
+		g_firstRun = FALSE;
 	}
 
 	// Start it collecting, then wait for completion
@@ -2612,7 +2611,7 @@ PICO_STATUS BlockDataHandler(UNIT* unit, int32_t offset, MODE mode, int16_t etsM
 			return status;
 		}
 
-		indices = BlockPeaktoPeak(unit, BufferInfo.driverBuffer, sampleCount, timeIntervalNanoseconds, downsampleratio);
+		indices = BlockPeaktoPeak(unit, g_BufferInfo.driverBuffer, sampleCount, timeIntervalNanoseconds, downsampleratio);
 		if (indices == NULL) // if there were memory allocation issues with the peak detection algorithm...
 		{
 			if (g_errorfp != NULL)
@@ -2647,8 +2646,8 @@ PICO_STATUS BlockDataHandler(UNIT* unit, int32_t offset, MODE mode, int16_t etsM
 						fprintf(wavefp,
 							"%d, %d, %d\n",
 							(int32_t)(i * timeIntervalNanoseconds * downsampleratio),
-							BufferInfo.driverBuffer[i],
-							adc_to_mv(BufferInfo.driverBuffer[i], unit->channelSettings[PS2000A_CHANNEL_A].range, unit));
+							g_BufferInfo.driverBuffer[i],
+							adc_to_mv(g_BufferInfo.driverBuffer[i], unit->channelSettings[PS2000A_CHANNEL_A].range, unit));
 					}
 					printf("done.\n");
 					// update the number of waveforms to be saved
@@ -2675,8 +2674,8 @@ PICO_STATUS BlockDataHandler(UNIT* unit, int32_t offset, MODE mode, int16_t etsM
 				for (uint16_t i = 1; i <= numpeaks; i++)
 				{
 					fprintf(g_peakfp, "%d,%d,",
-						BufferInfo.driverBuffer[indices[i]],
-						adc_to_mv(BufferInfo.driverBuffer[indices[i]], unit->channelSettings[PS2000A_CHANNEL_A].range, unit));
+						g_BufferInfo.driverBuffer[indices[i]],
+						adc_to_mv(g_BufferInfo.driverBuffer[indices[i]], unit->channelSettings[PS2000A_CHANNEL_A].range, unit));
 				}
 				fprintf(g_peakfp, "T,"); // some arbitrary deliminating character to separate peak depths and time differences
 				// print time differences (in ns) between the first peak and other peaks
@@ -2710,24 +2709,16 @@ PICO_STATUS BlockDataHandler(UNIT* unit, int32_t offset, MODE mode, int16_t etsM
 		fclose(wavefp); // if we wrote waveform data to a file, close it
 	}
 
-	// free up the buffer if we allocated it
-	if (unit->channelSettings[PS2000A_CHANNEL_A].enabled && BufferInfo.driverBuffer != NULL)
-	{
-		free(BufferInfo.driverBuffer);
-	}
-
 	if (indices != NULL)
 	{
 		free(indices); // no memory leaks in this here code
 	}
 
+	// clear the driver buffer for the next run, not strictly necessary
+	memset(g_BufferInfo.driverBuffer, 0, sampleCount * sizeof(int16_t));
+
 	printf("Total Number of Multi-Peak Events Recorded: %I64d\n", g_nummultipeakevents);
 
-	// clear the device's internal buffers before the next run just to be thorough, not really necessary
-	if ((status = ClearDataBuffers(unit)) != PICO_OK)
-	{
-		picoerrorLog(g_errorfp, status, __LINE__, __func__, "ClearDataBuffers");
-	}
 	return status;
 }
 
@@ -2764,7 +2755,6 @@ PICO_STATUS CollectBlockTriggered(UNIT* unit)
 		printf("[Line Number in Source File] CallingScope::FunctionThatReturnedError ------ Error (Error Code)\n");
 		printf("Press a key to start...\n");
 		_getch();
-		g_firstRun = FALSE;
 	}
 
 	// set up the scope for data collection and collect it
@@ -3234,6 +3224,10 @@ int main()
 			}
 		}
 
+		if (g_BufferInfo.driverBuffer != NULL)
+		{
+			free(g_BufferInfo.driverBuffer); // free the space allocated for the driver buffer
+		}
 		if (g_peakfp != NULL)
 		{
 			fclose(g_peakfp); // close the peak info file
