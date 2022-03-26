@@ -103,10 +103,11 @@ uint16_t inputRanges[PS2000A_MAX_RANGES] = {
 
 // just an idea...
 // allocate space for struct and however many pointers we have to store at the end
-typedef struct globalPointers
+// would make freeing everything at the end of the program a bit cleaner
+typedef struct tGlobalPointers
 {
 	uint32_t numpointers;
-	void* pointers;
+	void* pointers[0];
 } GLOBAL_POINTERS;
 
 /*
@@ -117,10 +118,7 @@ wasn't copied over to here)
 #define		DUAL_SCOPE		2 // used in get_info function, number of channels in a DUAL_SCOPE is 2
 #define		QUAD_SCOPE		4 // used in get_info function, number of channels in a QUAD_SCOPE is 4
 
-/*
-Visual Studio had an issue with the way he defined booleans
-via enumeration, we'll just define TRUE and FALSE this way
-*/
+// These look cooler
 #define		FALSE			0
 #define		TRUE			1			
 
@@ -1732,9 +1730,7 @@ std::string PICO_STATUStoString(PICO_STATUS status)
 * First calls cin.clear()
 * Then calls std::cin.ignore() to help with clearing the input buffer for future
 * inputs
-* "Pushes" the max macro before calling std::cin.ignore() so that
-* std::numeric_limits<std::streamsize>::max() gets read correctly, otherwise gets
-* read as the max macro which just returns the largest of two arguments passed
+* Has some work arounds included because of conflicts with the "max()" macro
 *
 * Parameters
 * - none
@@ -1915,13 +1911,14 @@ std::string picoerrortoString(PICO_STATUS status, int linenumber, std::string ca
 {
 	// allocating space for 256 chars is a bit arbitrary, but the callingscope functions can be arbitrarily(ish) 
 	// long so we'll leave a reasonable amount of space to play with
+
 	// could count the length needed (as shown below in the block comment) but this would prolly introduce some
-	// unnecessary overehead, space efficiency isn't really vital here
+	// unnecessary overehead, being super space efficient isn't really vital here
 		// would have to add an if(status != PICO_OK) check so we don't allocate this space just to print an empty string to it
 	/*
 	int templine = linenumber;
 	PICO_STATUS tempstatus = status;
-	uint32_t numchars = 16; // number of chars just due to the way it's printed, and then one for the null terminator
+	uint32_t numchars = 19; // number of chars just due to the way it's printed
 	while (templine != 0)
 	{
 		numchars++;
@@ -2297,14 +2294,16 @@ void __stdcall CallBackBlock(int16_t handle, PICO_STATUS status, void* pParamete
 * - returns the average of the 5 inputted int16_t's
 *
 * Parameters
-* - a,b,c,d,e : int16_t values to be averaged
+* - a,b,c,d,e : int32_t values to be averaged, values passed will be of type
+* int16_t, the resulting conversions to int32_t will eliminate the need for
+* some casting here in the function
 *
 * Returns
 * - int16_t : contains the average of the 5 values passed as arguments
 ****************************************************************************/
-inline int16_t MovingAverageFive(int16_t a, int16_t b, int16_t c, int16_t d, int16_t e)
+inline int16_t MovingAverageFive(int32_t a, int32_t b, int32_t c, int32_t d, int32_t e)
 {
-	return (int16_t)((float_t)((int32_t)a + (int32_t)b + (int32_t)c + (int32_t)d + (int32_t)e) / 5.0);
+	return (int16_t)((float_t)(a + b + c + d + e) / 5.0);
 }
 
 /****************************************************************************
@@ -2358,6 +2357,8 @@ float_t ArrayAvg(int16_t* buffer, uint32_t sampleCount)
 * - sampleCount : the number of samples in the buffer
 * - globalBuffer : indicates whether or not the workBuffer is to be used
 *		- TRUE indicates use, FALSE indicates not to use
+* - maxnumpeaks : the maximum number of peaks the function will search for
+* before stopping the search and returning, default at 9 arbitrarily
 *
 * Returns
 * - uint32_t* : pointer to buffer with 10 uint32_t's. The first entry in the
@@ -2366,19 +2367,18 @@ float_t ArrayAvg(int16_t* buffer, uint32_t sampleCount)
 * (peak 1's index is stored in buffer[1], the second peak in buffer[2], etc.)
 * or are left blank
 ****************************************************************************/
-uint32_t* BlockPeakFinding(UNIT* unit, int16_t* dataBuffer, int16_t* workBuffer, uint32_t sampleCount, BOOL globalBuffer)
+uint32_t* BlockPeakFinding(UNIT* unit, int16_t* dataBuffer, int16_t* workBuffer, uint32_t sampleCount, BOOL globalBuffer, uint16_t maxnumpeaks = 9)
 {
 	uint32_t* indices = NULL;
-	indices = (uint32_t*)calloc(10, sizeof(uint32_t)); // first entry gets numpeaks, subsequent ones get index (in the buffer) of the peak from the waveform
+	indices = (uint32_t*)calloc(maxnumpeaks + 1, sizeof(uint32_t)); // first entry gets numpeaks, subsequent ones get index (in the buffer) of the peak from the waveform
 	int16_t peakValue = std::numeric_limits<int16_t>::infinity();
 	int16_t thresh = mv_to_adc(g_peakthresh, unit->channelSettings[PS2000A_CHANNEL_A].range, unit); // g_peakthresh needed to filter out some of the noise, a bit of a duct tape solution but it works
 	uint16_t numpeaks = 0;
-	uint16_t maxnumpeaks = 9;
 	int16_t* smoothbuffer = NULL;
 	smoothbuffer = globalBuffer ? workBuffer : (int16_t*)calloc(sampleCount, sizeof(int16_t)); // either use the passed in buffer or allocate our own
 	/*
 	* Quick note here:
-	*	Initially tried making smoothbuffer of type float32_t to avoid
+	*	Initially tried making smoothbuffer of type float_t to avoid
 	*	some of the truncation that would come with the averaging, but doing this
 	*	caused all kinds of memory exceptions down the line, think it might have
 	*	something to do with not getting all the memory we asked for and then trying
@@ -2510,8 +2510,7 @@ uint32_t* BlockPeakFinding(UNIT* unit, int16_t* dataBuffer, int16_t* workBuffer,
 ****************************************************************************/
 uint32_t* BlockPeaktoPeak(UNIT* unit, int16_t* buffer, uint32_t sampleCount, uint32_t sampleInterval, uint32_t downsampleratio)
 {
-	uint16_t numpeaks = 0;
-	uint32_t peaktopeak = -1;
+	uint16_t numpeaks;
 	uint32_t* indices = NULL;
 	BOOL globalBufferIndicator = FALSE;
 
@@ -2579,7 +2578,7 @@ uint32_t* BlockPeaktoPeak(UNIT* unit, int16_t* buffer, uint32_t sampleCount, uin
 ****************************************************************************/
 PICO_STATUS BlockDataHandler(UNIT* unit, int32_t offset, MODE mode, int16_t etsModeSet)
 {
-	PICO_STATUS status = PICO_OK;
+	PICO_STATUS status;
 	uint16_t numpeaks;
 	static int32_t timeIntervalNanoseconds, posttriggersampleCount, pretriggersampleCount, sampleCount, maxSamples; // vars get set on first call to function, retain value for subsequent runs because static
 	uint32_t segmentIndex = 0;
@@ -2625,7 +2624,7 @@ PICO_STATUS BlockDataHandler(UNIT* unit, int32_t offset, MODE mode, int16_t etsM
 		// Validate the current timebase index, and find the maximum number of samples and the time interval (in nanoseconds)
 		while ((status = ps2000aGetTimebase(unit->handle, g_timebase, sampleCount, &timeIntervalNanoseconds, g_oversample, &maxSamples, 0)) != PICO_OK)
 		{
-			if (status == PICO_INVALID_TIMEBASE) // not an actual error, just need to try a different time base
+			if (status == PICO_INVALID_TIMEBASE) // not an actual error, just need to try a different (slower) time base (see Programmer's Guide for explanation)
 			{
 				g_timebase++; // we shouldn't reach this spot, this should just stay at 0 (so long as we're using single channel block mode)
 			}
@@ -2680,7 +2679,7 @@ PICO_STATUS BlockDataHandler(UNIT* unit, int32_t offset, MODE mode, int16_t etsM
 		if (numpeaks > 1) // no reason to record 1-peak events
 		{
 			g_nummultipeakevents++; // keep track of how many events we've recorded
-			if (((g_numwavestosaved > 0) || (g_numwavestosaved == -1))) // if we're still saving waveforms
+			if ((g_numwavestosaved > 0) || (g_numwavestosaved == -1)) // if we're still saving waveforms
 			{
 				// give the file a time-dependent name to avoid file name collisions
 				wavefilename = "RAW_WAVEFORM_"; // reset the filename from the last block of multi-peak data
@@ -2759,7 +2758,7 @@ PICO_STATUS BlockDataHandler(UNIT* unit, int32_t offset, MODE mode, int16_t etsM
 
 	if (wavefp != NULL)
 	{
-		fclose(wavefp); // if we wrote waveform data to a file, close it
+		fclose(wavefp);
 	}
 
 	if (indices != NULL)
@@ -2790,7 +2789,7 @@ PICO_STATUS BlockDataHandler(UNIT* unit, int32_t offset, MODE mode, int16_t etsM
 ****************************************************************************/
 PICO_STATUS CollectBlockTriggered(UNIT* unit)
 {
-	PICO_STATUS status = PICO_OK;
+	PICO_STATUS status;
 
 	// this function did a lot more work with how it was originally written by the author in the example
 	// I moved the trigger setting code to the OpenDevice() function because it made more logical sense 
@@ -2834,12 +2833,12 @@ PICO_STATUS CollectBlockTriggered(UNIT* unit)
 ****************************************************************************/
 PICO_STATUS get_info(UNIT* unit)
 {
-	int16_t requiredSize;
-	int8_t line[80];
-	PICO_STATUS status = PICO_OK;
-	int16_t numChannels = DUAL_SCOPE;
+	PICO_STATUS status;
 	int8_t channelNum = 0;
-	int8_t description[11][25] = { "Driver Version",
+	int16_t requiredSize;
+	int16_t numChannels = DUAL_SCOPE;
+	int8_t line[80];
+	int8_t description[11][25] = { "Driver Version", // some space saving to be had here?
 									"USB Version",
 									"Hardware Version",
 									"Variant Info",
@@ -2883,7 +2882,6 @@ PICO_STATUS get_info(UNIT* unit)
 				// Set first range for voltage if device is a 2206/7/8, 2206/7/8A or 2205 MSO
 				if (numChannels == DUAL_SCOPE)
 				{
-					// Visual Studio doesn't like strcmpi function, using _strcmpi instead
 					if (strlen((const char*)line) == 4 || (strlen((const char*)line) == 5 && _strcmpi((const char*)&line[4], "A") == 0) || (_strcmpi((const char*)line, "2205MSO")) == 0)
 					{
 						unit->firstRange = PS2000A_50MV;
@@ -2917,9 +2915,9 @@ PICO_STATUS get_info(UNIT* unit)
 ***************************************************************************/
 PICO_STATUS OpenDevice(UNIT* unit)
 {
+	PICO_STATUS status; // keep track of success/ failure of calls to pico library functions
 	int16_t maxvalue, rangeselect; // max ADC count the scope will return, scope range selected by user mV (index in inputRanges[])
 	PS2000A_RANGE scoperange = PS2000A_2V; // scope range, typically want PS2000A_2V for this application
-	PICO_STATUS status = PICO_OK; // keep track of success/ failure of calls to pico library functions
 	BOOL cinflag = FALSE; // flag used to keep track of cin's error status after taking in user input, FALSE (no flag raised) if ok, TRUE if error indicated by cin
 
 	printf("Opening device...");
@@ -2955,10 +2953,8 @@ PICO_STATUS OpenDevice(UNIT* unit)
 	/*
 	* Scope Range Select
 	*/
-	rangeselect = unit->firstRange - 1; // make initial value unacceptable so we enter the while loop
 	std::cin.clear(); // flush the input buffer
-	while (!(rangeselect > unit->firstRange && rangeselect < unit->lastRange) // make sure input falls in an acceptable range
-		|| cinflag) // and there were no errors while taking in input
+	do
 	{
 		printf("\n\nPlease select the scope's operational voltage range:\n");
 		printf("The recommended value is 2000mV.\n");
@@ -2980,7 +2976,8 @@ PICO_STATUS OpenDevice(UNIT* unit)
 		scoperange = (PS2000A_RANGE)inputRanges[rangeselect];
 		cinflag = (std::cin.bad() || std::cin.fail()) ? TRUE : FALSE; // check if cin's error flags were set
 		cinReset(); // flush the input buffer for future inputs
-	}
+	} while (!(rangeselect > unit->firstRange && rangeselect < unit->lastRange) // make sure input falls in an acceptable range
+		|| cinflag); // and there were no errors while taking in input
 
 	for (int16_t i = 0; i < unit->channelCount; i++)
 	{
@@ -2988,7 +2985,6 @@ PICO_STATUS OpenDevice(UNIT* unit)
 		{
 			unit->channelSettings[i].enabled = TRUE;
 			unit->channelSettings[i].DCcoupled = TRUE;
-			//unit->channelSettings[i].range = PS2000A_2V; // hard coded default
 			unit->channelSettings[i].range = rangeselect; // index, not actual mV value
 		}
 		else
@@ -3007,11 +3003,8 @@ PICO_STATUS OpenDevice(UNIT* unit)
 	/*
 	* Scope Trigger Level Select
 	*/
-	g_trigthresh = inputRanges[unit->channelSettings[PS2000A_CHANNEL_A].range] + 1; //set the initial value to something unacceptable so we enter the while loop
 	std::cin.clear(); // flush the input buffer
-	while (!(g_trigthresh > -inputRanges[unit->channelSettings[PS2000A_CHANNEL_A].range] // make sure input falls in an acceptable range
-		&& g_trigthresh < inputRanges[unit->channelSettings[PS2000A_CHANNEL_A].range]) // ^
-		|| cinflag) // and there were no errors while taking in input
+	do
 	{
 		printf("\n\nPlease enter the scope's trigger threshold (%d mV to %d mV):\nA value of -400mV is recommended.\n",
 			-inputRanges[unit->channelSettings[PS2000A_CHANNEL_A].range],
@@ -3021,7 +3014,9 @@ PICO_STATUS OpenDevice(UNIT* unit)
 		std::cin >> g_trigthresh;
 		cinflag = (std::cin.bad() || std::cin.fail()) ? TRUE : FALSE; // check if cin's error flags were set
 		cinReset(); // flush the input buffer for future inputs
-	}
+	} while (!(g_trigthresh > -inputRanges[unit->channelSettings[PS2000A_CHANNEL_A].range] // make sure input falls in an acceptable range
+		&& g_trigthresh < inputRanges[unit->channelSettings[PS2000A_CHANNEL_A].range]) // ^
+		|| cinflag); // and there were no errors while taking in input
 
 	printf("Selected Trigger Threshold: %d", g_scaleVoltages ? // if scale voltages
 		g_trigthresh : // print value in mV
@@ -3074,12 +3069,8 @@ PICO_STATUS OpenDevice(UNIT* unit)
 	/*
 	* Peak Detection Threshold Select
 	*/
-	// make initial value unacceptable so we enter the while loop (value is 1 below the scope's supported range)
-	g_peakthresh = -inputRanges[unit->channelSettings[PS2000A_CHANNEL_A].range] - 1;
 	std::cin.clear(); // flush the input buffer
-	while (!(g_peakthresh >= -inputRanges[unit->channelSettings[PS2000A_CHANNEL_A].range] // make sure input falls in an acceptable range
-		&& g_peakthresh <= 0) // ^
-		|| cinflag) // and there were no errors while taking in input
+	do
 	{
 		printf("\n\nPlease enter the threshold for the peak detection algorithm(-%d mV to 0 mV):\nA value of -200mV is recommended.\n\n",
 			inputRanges[unit->channelSettings[PS2000A_CHANNEL_A].range]);
@@ -3088,7 +3079,9 @@ PICO_STATUS OpenDevice(UNIT* unit)
 		std::cin >> g_peakthresh; // take in the input
 		cinflag = (std::cin.bad() || std::cin.fail()) ? TRUE : FALSE; // check if cin's error flags were set
 		cinReset(); // flush the input buffer for future inputs
-	}
+	} while (!(g_peakthresh >= -inputRanges[unit->channelSettings[PS2000A_CHANNEL_A].range] // make sure input falls in an acceptable range
+		&& g_peakthresh <= 0) // ^
+		|| cinflag); // and there were no errors while taking in input
 
 	printf("Selected Peak Detection Threshold: %d", g_scaleVoltages ? // if scale voltages
 		g_peakthresh : // print value in mV
@@ -3140,11 +3133,11 @@ void CloseDevice(UNIT* unit)
 		}
 		if (g_peakfp != NULL)
 		{
-			fclose(g_peakfp); // close the peak info file
+			fclose(g_peakfp);
 		}
 		if (g_errorfp != NULL)
 		{
-			fclose(g_errorfp); // close the error log file
+			fclose(g_errorfp);
 		}
 		SHORT qinit = _kbhitinit();
 		printf("Press the \'Q\' key to exit the program.\n");
@@ -3219,7 +3212,7 @@ int main()
 	{
 		// display choices
 		printf("\n");
-		printf("B - Triggered block                          X - Exit\n\n");
+		printf("B - Triggered Block                          X - Exit\n\n");
 		printf("Operation:");
 
 		std::cin >> ch; // get the user's choice
@@ -3234,6 +3227,9 @@ int main()
 	{
 	case 'B': // collect block triggered
 	{
+		printf("Selected B- Triggered Block\n");
+		printf("This routine is written for use only with Channel A.\n\n");
+
 		// give the peak info file a unique (time dependent) name so we don't overwrite anything
 		// want this name matching with the error to make checking stuff later easier
 		peakfilename += starttimeinfo;
@@ -3259,13 +3255,11 @@ int main()
 			return -1; // no point in continuing if we can't save any data
 		}
 
-		// replace initial unnaceptable values with do while loops?-> might be clearer/ more readable
-		// give an initial unacceptable value so we enter the while loop
-		g_numwavestosaved = -2;
-		// select number of waveforms to save to .csv files
-		std::cin.clear(); // flush the input buffer
-		while (!(g_numwavestosaved >= -1 && g_numwavestosaved <= (std::numeric_limits<int64_t>::max)()) // make sure input falls in an acceptable range
-			|| cinflag) // and there were no errors while taking in input
+		/*
+		* Select number of waveforms to save to .csv files
+		*/
+		std::cin.clear();
+		do
 		{
 			printf("Please enter the number of multi-peak waveforms you'd like to save. (0-%I64d)\n", (std::numeric_limits<int64_t>::max)());
 			printf("Enter -1 if you wish to save every multi-peak waveform the scope records.\n");
@@ -3274,7 +3268,8 @@ int main()
 			std::cin >> g_numwavestosaved; // take in the user input
 			cinflag = (std::cin.bad() || std::cin.fail()) ? TRUE : FALSE; // check if cin's error flags were set
 			cinReset(); // flush the input buffer for future inputs
-		}
+		} while (!(g_numwavestosaved >= -1 && g_numwavestosaved <= (std::numeric_limits<int64_t>::max)()) // make sure input falls in an acceptable range
+			|| cinflag); // and there were no errors while taking in input
 
 		printf("Selected number of multi-peak waveforms to save: %I64d\n", g_numwavestosaved);
 
